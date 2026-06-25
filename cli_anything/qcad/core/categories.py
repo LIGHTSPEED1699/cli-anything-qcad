@@ -104,6 +104,15 @@ def get_category(name: str) -> Optional[ModificationCategory]:
 def classify(annotation_text: str) -> ModificationCategory:
     """Simple rule-based classifier; replaceable with LLM router."""
     text_lower = annotation_text.lower()
+
+    # Revision-block changes look like "Add REV \"4\" ..." but are text edits, not geometry addition
+    if "rev \"" in text_lower or "rev block" in text_lower or "revision" in text_lower:
+        return CATEGORIES["text_change"]
+
+    # Explicit deletion requests with cloud keywords
+    if any(v in text_lower for v in ["delete", "remove", "erase", "eliminate"]):
+        return CATEGORIES["delete"]
+
     best = CATEGORIES["ambiguous"]
     best_score = 0
     for cat in CATEGORIES.values():

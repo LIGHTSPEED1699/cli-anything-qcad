@@ -49,8 +49,6 @@ class QcadRenderer:
             return True
         if self._render_pdf_convert(file_path, output_png):
             return True
-        if self.qcad_bin and self._render_dwg2bmp_qcad_dir(file_path, output_png):
-            return True
         if self.qcad_bin and self._render_qcad_script(file_path, output_png):
             return True
         return False
@@ -97,42 +95,31 @@ class QcadRenderer:
         exe = self._find_qcad_child("dwg2bmp")
         if not exe:
             return False
+        in_path = Path(file_path)
         with tempfile.TemporaryDirectory() as tmpdir:
-            out_bmp = str(Path(tmpdir) / "render.bmp")
-            cmd = [exe, "-x", f"-o={out_bmp}", file_path]
+            tmp_input = Path(tmpdir) / in_path.name
+            shutil.copy(file_path, tmp_input)
+            out_bmp = Path(tmpdir) / (in_path.stem + ".bmp")
+            cmd = [exe, "-x", "-f", str(tmp_input)]
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-            if result.returncode != 0 or not Path(out_bmp).exists():
+            if result.returncode != 0 or not out_bmp.exists():
                 return False
-            subprocess.run(["convert", out_bmp, output_png], capture_output=True, timeout=60)
+            subprocess.run(["convert", str(out_bmp), output_png], capture_output=True, timeout=60)
             return Path(output_png).exists()
 
     def _render_pdf_convert(self, file_path: str, output_png: str) -> bool:
         exe = self._find_qcad_child("dwg2pdf")
         if not exe:
             return False
+        in_path = Path(file_path)
         with tempfile.TemporaryDirectory() as tmpdir:
-            out_pdf = str(Path(tmpdir) / "render.pdf")
-            cmd = [exe, "-x", f"-o={out_pdf}", file_path]
+            tmp_input = Path(tmpdir) / in_path.name
+            shutil.copy(file_path, tmp_input)
+            out_pdf = Path(tmpdir) / (in_path.stem + ".pdf")
+            cmd = [exe, "-x", "-f", str(tmp_input)]
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-            if result.returncode != 0 or not Path(out_pdf).exists():
+            if result.returncode != 0 or not out_pdf.exists():
                 return False
-            subprocess.run(["convert", "-density", str(self.dpi), out_pdf, output_png],
+            subprocess.run(["convert", "-density", str(self.dpi), str(out_pdf), output_png],
                           capture_output=True, timeout=120)
-            return Path(output_png).exists()
-
-    def _render_dwg2bmp_qcad_dir(self, file_path: str, output_png: str) -> bool:
-        """Fallback: call qcad-bin with dwg2bmp if a standalone dwg2bmp is not found."""
-        exe = self.qcad_bin
-        if not exe:
-            return False
-        with tempfile.TemporaryDirectory() as tmpdir:
-            out_bmp = str(Path(tmpdir) / "render.bmp")
-            cmd = [exe, "-no-gui", "-platform", "offscreen", "-x", f"-o={out_bmp}", file_path]
-            env = os.environ.copy()
-            env.setdefault("QT_QPA_PLATFORM", "offscreen")
-            env.setdefault("DISPLAY", os.environ.get("DISPLAY", ":0"))
-            result = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=120)
-            if result.returncode != 0 or not Path(out_bmp).exists():
-                return False
-            subprocess.run(["convert", out_bmp, output_png], capture_output=True, timeout=60)
             return Path(output_png).exists()
