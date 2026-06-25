@@ -10,6 +10,7 @@ from cli_anything.qcad.pipelines.markup_pipeline import MarkupPipeline
 from cli_anything.qcad.utils.pdf_parser import PdfAnnotationParser
 from cli_anything.qcad.backends.dwg_converter import DwgConverter
 from cli_anything.qcad.utils.visual_verify import VisualVerifier
+from cli_anything.qcad.utils.render import QcadRenderer
 
 
 @click.group(invoke_without_command=True)
@@ -40,15 +41,30 @@ def apply(ctx, dwg_path, pdf_path, output, dry_run):
     converter = DwgConverter(qcad_bin=ctx.obj.get("qcad"), oda_converter=ctx.obj.get("oda"))
     overrides = None
     if ctx.obj.get("overrides"):
-        with open(ctx.obj["overrides"]) as f:
+        with open(ctx.obj.get("overrides")) as f:
             overrides = json.load(f)
+
+    renderer = QcadRenderer(qcad_bin=ctx.obj.get("qcad"))
+    verifier = VisualVerifier(renderer=renderer)
+
+    if dry_run:
+        parser = PdfAnnotationParser()
+        annotations = parser.parse(pdf_path)
+        from cli_anything.qcad.core.categories import classify
+        plan = []
+        for annot in annotations:
+            cat = classify(annot.get("text", ""))
+            plan.append({"text": annot.get("text"), "category": cat.name, "tier": cat.default_tier})
+        _emit(ctx, {"dry_run": True, "plan": plan})
+        return
+
     pipeline = MarkupPipeline(
         pdf_parser=PdfAnnotationParser(),
         converter=converter,
-        verifier=VisualVerifier(),
+        verifier=verifier,
         qcad_bin=ctx.obj.get("qcad"),
     )
-    job = pipeline.run_with_pdf(dwg_path, pdf_path, output_dwg=output, overrides=overrides)
+    job = pipeline.run(dwg_path, pdf_path, output_dwg=output, overrides=overrides)
     _emit(ctx, job.to_dict())
 
 
@@ -90,14 +106,27 @@ def parse(ctx, pdf_path):
 @click.pass_context
 def render(ctx, dwg_path, out):
     """Render a DWG/DXF to PNG."""
-    verifier = VisualVerifier()
-    success = verifier.render(dwg_path, out)
+    renderer = QcadRenderer(qcad_bin=ctx.obj.get("qcad"))
+    success = renderer.render(dwg_path, out)
     _emit(ctx, {"success": success, "png": out})
+
+
+@cli.command()
+@click.argument("dwg_path")
+@click.option("--question", "-q", required=True, help="Question for VLM verification.")
+@click.option("--model", default=None, help="Vision model override.")
+@click.pass_context
+def verify(ctx, dwg_path, question, model):
+    """Render DWG and ask a VLM a yes/no verification question."""
+    from cli_anything.qcad.utils.visual_verifier import QcadVlmVerifier
+    verifier = QcadVlmVerifier(qcad_bin=ctx.obj.get("qcad"), model=model)
+    result = verifier.verify(dwg_path, question)
+    _emit(ctx, result)
 
 
 def _emit(ctx, data):
     if ctx.obj.get("json_output"):
-        click.echo(json.dumps(data, ensure_ascii=False, indent=2))
+        click.echo(json.dumps(data, ensure_ascii=False, indent=2, default=str))
     else:
         for k, v in data.items():
             click.echo(f"{k}: {v}")

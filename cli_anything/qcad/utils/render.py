@@ -10,14 +10,16 @@ from typing import Optional
 class QcadRenderer:
     """Render a DWG/DXF file to PNG using available tools."""
 
-    def __init__(self, qcad_bin: Optional[str] = None, dpi: int = 150):
+    def __init__(self, qcad_bin: Optional[str] = None, dpi: int = 150, width: int = 1600):
         self.qcad_bin = qcad_bin or self._find_qcad()
         self.dpi = dpi
+        self.width = width
 
     def _find_qcad(self) -> Optional[str]:
         candidates = [
             shutil.which("qcad"),
             str(Path.home() / "opt/qcad-3.32.7-pro-linux-qt6-x86_64/qcad"),
+            str(Path.home() / "opt/qcad-3.32.7-pro-linux-qt6-x86_64/qcad-bin"),
         ]
         for c in candidates:
             if c and Path(c).exists():
@@ -25,6 +27,101 @@ class QcadRenderer:
         return None
 
     def render(self, file_path: str, output_png: str) -> bool:
-        """Stub: render DWG/DXF to PNG via QCAD or dwg2pdf."""
-        # TODO: integrate full visual_verifier.py renderer logic
+        """Render DWG/DXF to PNG.
+
+        Priority:
+          1. QCAD headless export via ECMAScript.
+          2. dwg2bmp from QCAD Pro (headless rasterizer).
+          3. dwg2pdf + ImageMagick convert.
+        """
+        file_path = str(Path(file_path).resolve())
+        output_png = str(Path(output_png).resolve())
+
+        if self.qcad_bin and self._render_qcad_script(file_path, output_png):
+            return True
+        if self._render_dwg2bmp(file_path, output_png):
+            return True
+        if self._render_pdf_convert(file_path, output_png):
+            return True
         return False
+
+    def _render_qcad_script(self, file_path: str, output_png: str) -> bool:
+        if not self.qcad_bin:
+            return False
+        qd = Path(self.qcad_bin).parent
+        safe_file = file_path.replace("'", "\\'")
+        safe_png = output_png.replace("'", "\\'")
+        script = (
+            'include("scripts/library.js");\n'
+            'function main() {\n'
+            f'  var file = "{safe_file}";\n'
+            f'  var outPng = "{safe_png}";\n'
+            '  var storage = new RMemoryStorage();\n'
+            '  var spatialIndex = new RSpatialIndexSimple();\n'
+            '  var doc = new RDocument(storage, spatialIndex);\n'
+            '  var di = new RDocumentInterface(doc);\n'
+            '  var err = di.importFile(file);\n'
+            '  if (err !== RDocumentInterface.IoErrorNoError) { qcad.quit(1); }\n'
+            f'  var view = new RGraphicsViewQt(di);\n'
+            '  view.zoomToEntities();\n'
+            '  var scene = view.getScene();\n'
+            f'  var img = scene.renderToImage({self.width}, 0);\n'
+            '  img.save(outPng, "PNG");\n'
+            '  qcad.quit(0);\n'
+            '}\n'
+            'if (typeof(including) === "undefined" || !including) main();\n'
+        )
+        with tempfile.NamedTemporaryFile(suffix=".js", delete=False, mode="w") as f:
+            f.write(script)
+            script_path = f.name
+        env = os.environ.copy()
+        env.setdefault("QT_QPA_PLATFORM", "offscreen")
+        env.setdefault("DISPLAY", os.environ.get("DISPLAY", ":0"))
+        env.setdefault("LD_LIBRARY_PATH", f"{qd}:{qd}/plugins")
+        cmd = [self.qcad_bin, "-no-gui", "-platform", "offscreen",
+               "-allow-multiple-instances", "-autostart", script_path]
+        result = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=120)
+        return result.returncode == 0 and Path(output_png).exists()
+
+    def _render_dwg2bmp(self, file_path: str, output_png: str) -> bool:
+        candidates = [
+            shutil.which("dwg2bmp"),
+            str(Path.home() / "opt/qcad-3.32.7-pro-linux-qt6-x86_64/dwg2bmp"),
+        ]
+        exe = None
+        for c in candidates:
+            if c and Path(c).exists():
+                exe = c
+                break
+        if not exe:
+            return False
+        with tempfile.TemporaryDirectory() as tmpdir:
+            out_bmp = str(Path(tmpdir) / "render.bmp")
+            cmd = [exe, "-x", f"-o={out_bmp}", file_path]
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+            if result.returncode != 0 or not Path(out_bmp).exists():
+                return False
+            subprocess.run(["convert", out_bmp, output_png], capture_output=True, timeout=60)
+            return Path(output_png).exists()
+
+    def _render_pdf_convert(self, file_path: str, output_png: str) -> bool:
+        candidates = [
+            shutil.which("dwg2pdf"),
+            str(Path.home() / "opt/qcad-3.32.7-pro-linux-qt6-x86_64/dwg2pdf"),
+        ]
+        exe = None
+        for c in candidates:
+            if c and Path(c).exists():
+                exe = c
+                break
+        if not exe:
+            return False
+        with tempfile.TemporaryDirectory() as tmpdir:
+            out_pdf = str(Path(tmpdir) / "render.pdf")
+            cmd = [exe, "-x", f"-o={out_pdf}", file_path]
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+            if result.returncode != 0 or not Path(out_pdf).exists():
+                return False
+            subprocess.run(["convert", "-density", str(self.dpi), out_pdf, output_png],
+                          capture_output=True, timeout=120)
+            return Path(output_png).exists()

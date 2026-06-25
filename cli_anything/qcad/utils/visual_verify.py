@@ -1,9 +1,7 @@
 """Visual verification: render and compare DWG/DXF outputs."""
-import base64
+import json
 import os
-import shutil
-import subprocess
-import tempfile
+import urllib.request
 from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -33,7 +31,7 @@ class VisualVerifier:
     def __init__(self, renderer: QcadRenderer = None, ollama_url: str = None, vision_model: str = None):
         self.renderer = renderer or QcadRenderer()
         self.ollama_url = ollama_url or os.environ.get("OLLAMA_URL", "http://192.168.2.15:11434")
-        self.vision_model = vision_model or os.environ.get("VISION_MODEL", "qwen2.5vl:latest")
+        self.vision_model = vision_model or os.environ.get("VISION_MODEL", "gemma4:31b-cloud")
 
     def render(self, file_path: str, output_png: str) -> bool:
         return self.renderer.render(file_path, output_png)
@@ -42,7 +40,7 @@ class VisualVerifier:
         self,
         original_png: str,
         modified_png: str,
-        annotations: List[Dict[str, Any]],
+        annotations: List[Dict[str, Any]] = None,
     ) -> VerificationResult:
         if not Path(original_png).exists() or not Path(modified_png).exists():
             return VerificationResult(status="FAILED", error="Missing render PNG")
@@ -77,6 +75,35 @@ class VisualVerifier:
             return VerificationResult(status="FAILED", error=str(e))
 
     def vlm_verify(self, image_path: str, question: str) -> Dict[str, Any]:
-        """Stub: port qcad_vlm_verifier.py Ollama API call here."""
-        # TODO: integrate real VLM call
-        return {"answer": "stub", "confidence": 0.0}
+        """Ask a VLM whether the drawing satisfies the question."""
+        with open(image_path, "rb") as f:
+            image_b64 = f.read().hex()
+        # Encode bytes as base64 using stdlib
+        import base64
+        image_b64 = base64.b64encode(bytes.fromhex(image_b64)).decode()
+        payload = {
+            "model": self.vision_model,
+            "messages": [
+                {"role": "user", "content": f"{question}\n\nAnswer YES or NO.", "images": [image_b64]}
+            ],
+            "stream": False,
+            "options": {"num_predict": 1024, "temperature": 0.3},
+        }
+        try:
+            req = urllib.request.Request(
+                f"{self.ollama_url}/api/chat",
+                data=json.dumps(payload).encode(),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                result = json.loads(resp.read().decode())
+                answer = result.get("message", {}).get("content", "")
+                return {
+                    "answer": answer,
+                    "pass": "yes" in answer.lower()[:50],
+                    "model": self.vision_model,
+                    "eval_count": result.get("eval_count", 0),
+                }
+        except Exception as e:
+            return {"answer": f"ERROR: {e}", "pass": None, "model": self.vision_model, "error": str(e)}
