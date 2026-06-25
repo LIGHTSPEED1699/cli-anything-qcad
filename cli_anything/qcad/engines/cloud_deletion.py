@@ -287,6 +287,8 @@ class CloudDeletionEngine:
         fix_layer_visibility(deleted_dxf, out_dxf)
 
         return {
+            "success": True,
+            "deleted_count": len(deletion),
             "deletion": sorted(deletion),
             "restored": sorted(restored),
             "boundary": sorted(boundary),

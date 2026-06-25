@@ -20,7 +20,11 @@ class VlmX11Backend:
         For now, this reports the ambiguity and performs a VLM visual check.
         A full implementation would use Geisterhand to drive QCAD GUI clicks.
         """
-        question = annotation.get("text", "")
+        question = (
+            f"You are editing a CAD drawing based on this markup instruction:\n"
+            f"\"{annotation.get('text', '')}\"\n\n"
+            f"Does the current drawing state correctly implement that instruction?"
+        )
         try:
             result = self.verifier.verify(file_path, question)
             return {

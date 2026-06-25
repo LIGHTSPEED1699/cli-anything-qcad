@@ -104,7 +104,7 @@ class MarkupPipeline:
             result = self.clone.run(working_dxf, out_dxf, pairs)
         elif category.default_tier == "T1":
             annot["category"] = category.name
-            result = self.ezdxf.execute(annot, working_dxf)
+            result = self.ezdxf.execute(annot, working_dxf, out_dxf)
         elif category.default_tier in ("T2", "T3"):
             annot["category"] = category.name
             result = self.qcad_ecma.execute(annot, working_dxf)

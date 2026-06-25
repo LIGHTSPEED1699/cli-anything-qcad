@@ -6,13 +6,13 @@ from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from cli_anything.qcad.utils.render import QcadRenderer
+from PIL import Image, ImageChops
 
 
 @dataclass
 class VerificationResult:
     status: str
-    pixel_change_pct: float = 0.0
+    pixel_change_pct: float
     vlm_confidence: Optional[float] = None
     vlm_reasoning: Optional[str] = None
     original_png: Optional[str] = None
@@ -20,90 +20,96 @@ class VerificationResult:
     diff_png: Optional[str] = None
     error: Optional[str] = None
     renderer_used: str = ""
+    vlm: Dict = None
+
+    def __post_init__(self):
+        if self.vlm is None:
+            self.vlm = {}
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
 
 
 class VisualVerifier:
-    """Render DWG/DXF to PNG, pixel-diff, and optionally ask a VLM."""
+    """Compare original vs modified drawing renders."""
 
-    def __init__(self, renderer: QcadRenderer = None, ollama_url: str = None, vision_model: str = None):
-        self.renderer = renderer or QcadRenderer()
-        self.ollama_url = ollama_url or os.environ.get("OLLAMA_URL", "http://192.168.2.15:11434")
-        self.vision_model = vision_model or os.environ.get("VISION_MODEL", "gemma4:31b-cloud")
+    def __init__(self, renderer=None):
+        self.renderer = renderer
 
     def render(self, file_path: str, output_png: str) -> bool:
+        if self.renderer is None:
+            return False
         return self.renderer.render(file_path, output_png)
 
-    def compare(
-        self,
-        original_png: str,
-        modified_png: str,
-        annotations: List[Dict[str, Any]] = None,
-    ) -> VerificationResult:
-        if not Path(original_png).exists() or not Path(modified_png).exists():
-            return VerificationResult(status="FAILED", error="Missing render PNG")
-
+    def compare(self, original_png: str, modified_png: str,
+                annotations: List[Dict[str, Any]]) -> VerificationResult:
         try:
-            from PIL import Image, ImageChops
-            img1 = Image.open(original_png).convert("RGB")
-            img2 = Image.open(modified_png).convert("RGB")
-            diff = ImageChops.difference(img1, img2)
-            bbox = diff.getbbox()
-            changed = 0
-            if bbox:
-                diff_gray = diff.convert("L")
-                changed = sum(1 for p in diff_gray.getdata() if p > 10)
-            total = img1.width * img1.height
-            pct = changed / total if total else 0.0
+            orig = Image.open(original_png).convert("RGB")
+            mod = Image.open(modified_png).convert("RGB")
+            w = min(orig.width, mod.width)
+            h = min(orig.height, mod.height)
+            orig_c = orig.crop((0, 0, w, h)).convert("L")
+            mod_c = mod.crop((0, 0, w, h)).convert("L")
 
-            status = "PASSED"
-            if pct > 0.10:
-                status = "FAILED"
-            elif pct > 0.01:
-                status = "WARNING"
+            diff = ImageChops.difference(orig_c, mod_c)
+            import numpy as np
+            np_diff = np.array(diff)
+            nonzero = int(np.count_nonzero(np_diff > 20))
+            total = np_diff.size
+            pct = 100.0 * nonzero / total if total else 0.0
 
+            diff_path = str(Path(modified_png).with_suffix("")) + "_diff.png"
+            out = Image.new("RGB", (w, h))
+            out.paste(orig.crop((0, 0, w, h)), (0, 0))
+            arr = np.array(out)
+            arr[np_diff > 20] = [255, 0, 0]
+            Image.fromarray(arr).save(diff_path)
+
+            status = "PASSED" if pct > 0.1 else "FAILED"
             return VerificationResult(
                 status=status,
                 pixel_change_pct=pct,
                 original_png=original_png,
                 modified_png=modified_png,
+                diff_png=diff_path,
                 renderer_used="pixel_diff",
             )
         except Exception as e:
-            return VerificationResult(status="FAILED", error=str(e))
+            return VerificationResult(
+                status="ERROR",
+                pixel_change_pct=0.0,
+                error=str(e),
+                renderer_used="pixel_diff",
+            )
 
-    def vlm_verify(self, image_path: str, question: str) -> Dict[str, Any]:
-        """Ask a VLM whether the drawing satisfies the question."""
+    def vlm_verify(self, image_path: str, question: str,
+                   ollama_url: str = "http://192.168.2.15:11434",
+                   model: str = "gemma4:31b-cloud") -> Dict[str, Any]:
         with open(image_path, "rb") as f:
-            image_b64 = f.read().hex()
-        # Encode bytes as base64 using stdlib
-        import base64
-        image_b64 = base64.b64encode(bytes.fromhex(image_b64)).decode()
+            image_b64 = base64.b64encode(f.read()).decode()
         payload = {
-            "model": self.vision_model,
+            "model": model,
             "messages": [
-                {"role": "user", "content": f"{question}\n\nAnswer YES or NO.", "images": [image_b64]}
+                {"role": "user", "content": question, "images": [image_b64]}
             ],
             "stream": False,
-            "options": {"num_predict": 1024, "temperature": 0.3},
+            "options": {"num_predict": 512, "temperature": 0.3},
         }
         try:
             req = urllib.request.Request(
-                f"{self.ollama_url}/api/chat",
+                f"{ollama_url}/api/chat",
                 data=json.dumps(payload).encode(),
                 headers={"Content-Type": "application/json"},
                 method="POST",
             )
-            with urllib.request.urlopen(req, timeout=120) as resp:
+            with urllib.request.urlopen(req, timeout=60) as resp:
                 result = json.loads(resp.read().decode())
                 answer = result.get("message", {}).get("content", "")
                 return {
                     "answer": answer,
-                    "pass": "yes" in answer.lower()[:50],
-                    "model": self.vision_model,
+                    "pass": answer.strip().upper().startswith("YES"),
+                    "model": model,
                     "eval_count": result.get("eval_count", 0),
                 }
         except Exception as e:
-            return {"answer": f"ERROR: {e}", "pass": None, "model": self.vision_model, "error": str(e)}
+            return {"answer": f"ERROR: {e}", "pass": False, "model": model, "error": str(e)}

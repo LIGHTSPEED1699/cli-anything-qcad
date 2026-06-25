@@ -36,7 +36,7 @@ def test_visual_verify_compare():
         a = str(Path(tmpdir) / "a.png")
         b = str(Path(tmpdir) / "b.png")
         Image.new("RGB", (100, 100), color="white").save(a)
-        Image.new("RGB", (100, 100), color="white").save(b)
+        Image.new("RGB", (100, 100), color="black").save(b)
         v = VisualVerifier()
         r = v.compare(a, b, [])
         assert isinstance(r, VerificationResult)
