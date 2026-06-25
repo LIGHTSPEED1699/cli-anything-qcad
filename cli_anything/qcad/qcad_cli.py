@@ -16,13 +16,15 @@ from cli_anything.qcad.utils.visual_verify import VisualVerifier
 @click.option("--json", "json_output", is_flag=True, help="Emit machine-readable JSON.")
 @click.option("--qcad", default=None, help="Path to QCAD binary.")
 @click.option("--oda", default=None, help="Path to ODAFileConverter binary.")
+@click.option("--overrides", default=None, help="JSON file with handle overrides for cloud deletion.")
 @click.pass_context
-def cli(ctx, json_output, qcad, oda):
+def cli(ctx, json_output, qcad, oda, overrides):
     """CLI-Anything harness for QCAD: PDF markup → verified DWG."""
     ctx.ensure_object(dict)
     ctx.obj["json_output"] = json_output
     ctx.obj["qcad"] = qcad
     ctx.obj["oda"] = oda
+    ctx.obj["overrides"] = overrides
     if ctx.invoked_subcommand is None:
         click.echo(ctx.get_help())
 
@@ -36,12 +38,17 @@ def cli(ctx, json_output, qcad, oda):
 def apply(ctx, dwg_path, pdf_path, output, dry_run):
     """Apply PDF markups to a DWG file and verify the result."""
     converter = DwgConverter(qcad_bin=ctx.obj.get("qcad"), oda_converter=ctx.obj.get("oda"))
+    overrides = None
+    if ctx.obj.get("overrides"):
+        with open(ctx.obj["overrides"]) as f:
+            overrides = json.load(f)
     pipeline = MarkupPipeline(
         pdf_parser=PdfAnnotationParser(),
         converter=converter,
         verifier=VisualVerifier(),
+        qcad_bin=ctx.obj.get("qcad"),
     )
-    job = pipeline.run(dwg_path, pdf_path, output_dwg=output)
+    job = pipeline.run_with_pdf(dwg_path, pdf_path, output_dwg=output, overrides=overrides)
     _emit(ctx, job.to_dict())
 
 
