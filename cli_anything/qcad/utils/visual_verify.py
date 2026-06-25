@@ -1,6 +1,14 @@
 """Visual verification: render and compare DWG/DXF outputs."""
-from dataclasses import dataclass, field
+import base64
+import os
+import shutil
+import subprocess
+import tempfile
+from dataclasses import dataclass, asdict
+from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+from cli_anything.qcad.utils.render import QcadRenderer
 
 
 @dataclass
@@ -16,29 +24,19 @@ class VerificationResult:
     renderer_used: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
-            "status": self.status,
-            "pixel_change_pct": self.pixel_change_pct,
-            "vlm_confidence": self.vlm_confidence,
-            "vlm_reasoning": self.vlm_reasoning,
-            "original_png": self.original_png,
-            "modified_png": self.modified_png,
-            "diff_png": self.diff_png,
-            "error": self.error,
-            "renderer_used": self.renderer_used,
-        }
+        return asdict(self)
 
 
 class VisualVerifier:
-    """Render DWG/DXF to PNG and verify edits."""
+    """Render DWG/DXF to PNG, pixel-diff, and optionally ask a VLM."""
 
-    def __init__(self, renderer: str = "auto", dpi: int = 150):
-        self.renderer = renderer
-        self.dpi = dpi
+    def __init__(self, renderer: QcadRenderer = None, ollama_url: str = None, vision_model: str = None):
+        self.renderer = renderer or QcadRenderer()
+        self.ollama_url = ollama_url or os.environ.get("OLLAMA_URL", "http://192.168.2.15:11434")
+        self.vision_model = vision_model or os.environ.get("VISION_MODEL", "qwen2.5vl:latest")
 
     def render(self, file_path: str, output_png: str) -> bool:
-        """Render a DWG/DXF to PNG. Stub: integrate visual_verifier.py."""
-        return False
+        return self.renderer.render(file_path, output_png)
 
     def compare(
         self,
@@ -46,9 +44,39 @@ class VisualVerifier:
         modified_png: str,
         annotations: List[Dict[str, Any]],
     ) -> VerificationResult:
-        """Compare original and modified renders."""
-        # TODO: integrate pixel diff + VLM semantic check
-        return VerificationResult(
-            status="UNKNOWN",
-            error="Visual verifier stub: implement pixel diff and VLM check",
-        )
+        if not Path(original_png).exists() or not Path(modified_png).exists():
+            return VerificationResult(status="FAILED", error="Missing render PNG")
+
+        try:
+            from PIL import Image, ImageChops
+            img1 = Image.open(original_png).convert("RGB")
+            img2 = Image.open(modified_png).convert("RGB")
+            diff = ImageChops.difference(img1, img2)
+            bbox = diff.getbbox()
+            changed = 0
+            if bbox:
+                diff_gray = diff.convert("L")
+                changed = sum(1 for p in diff_gray.getdata() if p > 10)
+            total = img1.width * img1.height
+            pct = changed / total if total else 0.0
+
+            status = "PASSED"
+            if pct > 0.10:
+                status = "FAILED"
+            elif pct > 0.01:
+                status = "WARNING"
+
+            return VerificationResult(
+                status=status,
+                pixel_change_pct=pct,
+                original_png=original_png,
+                modified_png=modified_png,
+                renderer_used="pixel_diff",
+            )
+        except Exception as e:
+            return VerificationResult(status="FAILED", error=str(e))
+
+    def vlm_verify(self, image_path: str, question: str) -> Dict[str, Any]:
+        """Stub: port qcad_vlm_verifier.py Ollama API call here."""
+        # TODO: integrate real VLM call
+        return {"answer": "stub", "confidence": 0.0}
