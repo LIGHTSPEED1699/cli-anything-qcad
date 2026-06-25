@@ -26,22 +26,32 @@ class QcadRenderer:
                 return c
         return None
 
+    def _find_qcad_child(self, name: str) -> Optional[str]:
+        if not self.qcad_bin:
+            return shutil.which(name)
+        sibling = str(Path(self.qcad_bin).parent / name)
+        if Path(sibling).exists():
+            return sibling
+        return shutil.which(name)
+
     def render(self, file_path: str, output_png: str) -> bool:
         """Render DWG/DXF to PNG.
 
         Priority:
-          1. QCAD headless export via ECMAScript.
-          2. dwg2bmp from QCAD Pro (headless rasterizer).
-          3. dwg2pdf + ImageMagick convert.
+          1. dwg2bmp from QCAD Pro (headless rasterizer, fastest).
+          2. dwg2pdf + ImageMagick convert.
+          3. QCAD headless export to PNG via ECMAScript.
         """
         file_path = str(Path(file_path).resolve())
         output_png = str(Path(output_png).resolve())
 
-        if self.qcad_bin and self._render_qcad_script(file_path, output_png):
-            return True
         if self._render_dwg2bmp(file_path, output_png):
             return True
         if self._render_pdf_convert(file_path, output_png):
+            return True
+        if self.qcad_bin and self._render_dwg2bmp_qcad_dir(file_path, output_png):
+            return True
+        if self.qcad_bin and self._render_qcad_script(file_path, output_png):
             return True
         return False
 
@@ -62,7 +72,7 @@ class QcadRenderer:
             '  var di = new RDocumentInterface(doc);\n'
             '  var err = di.importFile(file);\n'
             '  if (err !== RDocumentInterface.IoErrorNoError) { qcad.quit(1); }\n'
-            f'  var view = new RGraphicsViewQt(di);\n'
+            '  var view = new RGraphicsViewQt(di);\n'
             '  view.zoomToEntities();\n'
             '  var scene = view.getScene();\n'
             f'  var img = scene.renderToImage({self.width}, 0);\n'
@@ -84,15 +94,7 @@ class QcadRenderer:
         return result.returncode == 0 and Path(output_png).exists()
 
     def _render_dwg2bmp(self, file_path: str, output_png: str) -> bool:
-        candidates = [
-            shutil.which("dwg2bmp"),
-            str(Path.home() / "opt/qcad-3.32.7-pro-linux-qt6-x86_64/dwg2bmp"),
-        ]
-        exe = None
-        for c in candidates:
-            if c and Path(c).exists():
-                exe = c
-                break
+        exe = self._find_qcad_child("dwg2bmp")
         if not exe:
             return False
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -105,15 +107,7 @@ class QcadRenderer:
             return Path(output_png).exists()
 
     def _render_pdf_convert(self, file_path: str, output_png: str) -> bool:
-        candidates = [
-            shutil.which("dwg2pdf"),
-            str(Path.home() / "opt/qcad-3.32.7-pro-linux-qt6-x86_64/dwg2pdf"),
-        ]
-        exe = None
-        for c in candidates:
-            if c and Path(c).exists():
-                exe = c
-                break
+        exe = self._find_qcad_child("dwg2pdf")
         if not exe:
             return False
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -124,4 +118,21 @@ class QcadRenderer:
                 return False
             subprocess.run(["convert", "-density", str(self.dpi), out_pdf, output_png],
                           capture_output=True, timeout=120)
+            return Path(output_png).exists()
+
+    def _render_dwg2bmp_qcad_dir(self, file_path: str, output_png: str) -> bool:
+        """Fallback: call qcad-bin with dwg2bmp if a standalone dwg2bmp is not found."""
+        exe = self.qcad_bin
+        if not exe:
+            return False
+        with tempfile.TemporaryDirectory() as tmpdir:
+            out_bmp = str(Path(tmpdir) / "render.bmp")
+            cmd = [exe, "-no-gui", "-platform", "offscreen", "-x", f"-o={out_bmp}", file_path]
+            env = os.environ.copy()
+            env.setdefault("QT_QPA_PLATFORM", "offscreen")
+            env.setdefault("DISPLAY", os.environ.get("DISPLAY", ":0"))
+            result = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=120)
+            if result.returncode != 0 or not Path(out_bmp).exists():
+                return False
+            subprocess.run(["convert", out_bmp, output_png], capture_output=True, timeout=60)
             return Path(output_png).exists()

@@ -45,18 +45,36 @@ class QcadEcmaBackend:
             "annotation": annotation.get("text"),
         }
 
-    def run_script(self, script: str, file_path: str) -> Dict[str, Any]:
-        """Execute an arbitrary ECMAScript against a DWG/DXF file."""
+    def run_script(self, script: str, file_path: str, out_path: str = None) -> Dict[str, Any]:
+        """Execute an arbitrary ECMAScript against a DWG/DXF file.
+
+        If out_path is not given, the script is expected to overwrite file_path.
+        """
         qcad = self._find_qcad()
+        qd = Path(qcad).parent
         with tempfile.NamedTemporaryFile(suffix=".js", delete=False, mode="w") as f:
             f.write(script)
             script_path = f.name
-        cmd = [qcad, "-platform", "offscreen", "-autostart", script_path, file_path]
+        out_path = out_path or file_path
+        cmd = [qcad, "-no-gui", "-platform", "offscreen",
+               "-allow-multiple-instances", "-autostart", script_path,
+               file_path, out_path]
+        env = {
+            "HOME": os.environ.get("HOME", "/root"),
+            "QT_QPA_PLATFORM": "offscreen",
+            "DISPLAY": os.environ.get("DISPLAY", ":0"),
+            "LD_LIBRARY_PATH": f"{qd}:{qd}/plugins",
+            "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        }
         try:
-            result = subprocess.run(cmd, check=True, capture_output=True, text=True)
-            return {"backend": "qcad_ecma", "success": True, "stdout": result.stdout}
+            result = subprocess.run(cmd, check=True, capture_output=True, text=True, env=env, timeout=120)
+            return {"backend": "qcad_ecma", "success": True, "stdout": result.stdout, "output": out_path}
         except subprocess.CalledProcessError as e:
-            return {"backend": "qcad_ecma", "success": False, "error": e.stderr}
+            return {"backend": "qcad_ecma", "success": False, "error": e.stderr, "stdout": e.stdout}
+        except subprocess.TimeoutExpired as e:
+            return {"backend": "qcad_ecma", "success": False, "error": f"timeout: {e}"}
+        finally:
+            Path(script_path).unlink(missing_ok=True)
 
     def move_entities(self, annotation: Dict[str, Any], file_path: str) -> Dict[str, Any]:
         """Move selected entities by dx/dy via ECMAScript."""
@@ -89,7 +107,7 @@ class QcadEcmaBackend:
             '}\n'
             'if (typeof(including) === "undefined" || !including) main();\n'
         )
-        return self.run_script(script, file_path)
+        return self.run_script(script, file_path, file_path)
 
     def add_entities(self, annotation: Dict[str, Any], file_path: str) -> Dict[str, Any]:
         """Add a simple LINE entity at given coordinates."""
@@ -116,7 +134,7 @@ class QcadEcmaBackend:
             f'var x1 = {x1}; var y1 = {y1}; var x2 = {x2}; var y2 = {y2};\n'
             'if (typeof(including) === "undefined" || !including) main();\n'
         )
-        return self.run_script(script, file_path)
+        return self.run_script(script, file_path, file_path)
 
     def swap_block(self, annotation: Dict[str, Any], file_path: str) -> Dict[str, Any]:
         """Replace block references: old_name -> new_name."""
@@ -151,7 +169,7 @@ class QcadEcmaBackend:
             '}\n'
             'if (typeof(including) === "undefined" || !including) main();\n'
         )
-        return self.run_script(script, file_path)
+        return self.run_script(script, file_path, file_path)
 
     def reorder_entities(self, annotation: Dict[str, Any], file_path: str) -> Dict[str, Any]:
         """Reorder entities via draw-order operation (not fully supported in headless)."""
