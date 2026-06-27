@@ -34,9 +34,11 @@ def cli(ctx, json_output, qcad, oda, overrides):
 @click.argument("dwg_path")
 @click.argument("pdf_path")
 @click.option("--output", "-o", default=None, help="Output DWG path.")
+@click.option("--artifacts", "-a", default=None, help="Directory to save per-step artifacts.")
+@click.option("--skip-vlm", is_flag=True, help="Skip final VLM verification call.")
 @click.option("--dry-run", is_flag=True, help="Plan only, do not execute edits.")
 @click.pass_context
-def apply(ctx, dwg_path, pdf_path, output, dry_run):
+def apply(ctx, dwg_path, pdf_path, output, artifacts, skip_vlm, dry_run):
     """Apply PDF markups to a DWG file and verify the result."""
     converter = DwgConverter(qcad_bin=ctx.obj.get("qcad"), oda_converter=ctx.obj.get("oda"))
     overrides = None
@@ -64,7 +66,8 @@ def apply(ctx, dwg_path, pdf_path, output, dry_run):
         verifier=verifier,
         qcad_bin=ctx.obj.get("qcad"),
     )
-    job = pipeline.run(dwg_path, pdf_path, output_dwg=output, overrides=overrides)
+    job = pipeline.run(dwg_path, pdf_path, output_dwg=output, overrides=overrides,
+                       artifacts_dir=artifacts, skip_vlm=skip_vlm)
     _emit(ctx, job.to_dict())
 
 

@@ -14,6 +14,8 @@ class JobSession:
     annotations: List[Dict[str, Any]] = field(default_factory=list)
     tasks: List[Dict[str, Any]] = field(default_factory=list)
     verification: Optional[Dict[str, Any]] = None
+    artifacts_dir: Optional[str] = None
+    artifacts: List[Dict[str, Any]] = field(default_factory=list)
     _modified: bool = False
 
     def has_project(self) -> bool:
@@ -31,6 +33,13 @@ class JobSession:
     def set_verification(self, result: Dict[str, Any]) -> None:
         self.verification = result
 
+    def add_artifact(self, kind: str, path: str, description: str = "") -> None:
+        self.artifacts.append({
+            "kind": kind,
+            "path": str(path),
+            "description": description,
+        })
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "job_id": self.job_id,
@@ -41,4 +50,6 @@ class JobSession:
             "annotations": self.annotations,
             "tasks": self.tasks,
             "verification": self.verification,
+            "artifacts_dir": self.artifacts_dir,
+            "artifacts": self.artifacts,
         }

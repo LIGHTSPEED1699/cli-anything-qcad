@@ -20,9 +20,20 @@ class VlmX11Backend:
         For now, this reports the ambiguity and performs a VLM visual check.
         A full implementation would use Geisterhand to drive QCAD GUI clicks.
         """
+        # Short annotations with no actionable verb are not worth a slow GUI launch
+        text = annotation.get("text", "").strip()
+        if len(text) <= 3:
+            return {
+                "backend": "vlm_x11",
+                "success": False,
+                "skipped": True,
+                "reason": f"Annotation text too short/ambiguous to act on: {text!r}",
+                "annotation": text,
+            }
+
         question = (
             f"You are editing a CAD drawing based on this markup instruction:\n"
-            f"\"{annotation.get('text', '')}\"\n\n"
+            f"\"{text}\"\n\n"
             f"Does the current drawing state correctly implement that instruction?"
         )
         try:

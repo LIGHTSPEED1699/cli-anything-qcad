@@ -1,6 +1,7 @@
 """Visual verification: render and compare DWG/DXF outputs."""
 import json
 import os
+import base64
 import urllib.request
 from dataclasses import dataclass, asdict
 from pathlib import Path
