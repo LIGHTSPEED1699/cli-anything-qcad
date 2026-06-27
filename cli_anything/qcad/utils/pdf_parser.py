@@ -99,12 +99,29 @@ class PdfAnnotationParser:
         for page_num in range(len(doc)):
             page = doc[page_num]
             freetext_annots, line_annots = [], []
+            polygon_annots = []
+            all_clouds = []
             for annot in page.annots() or []:
                 annot_type = annot.type[1]
                 if annot_type == 'FreeText':
                     freetext_annots.append(annot)
                 elif annot_type == 'Line':
                     line_annots.append(annot)
+                elif annot_type in ('Polygon', 'PolyLine'):
+                    polygon_annots.append(annot)
+
+            # First pass: collect polygons with their own text if any
+            for pg_annot in polygon_annots:
+                text = pg_annot.info.get("content", "").strip()
+                vertices = list(pg_annot.vertices) if hasattr(pg_annot, 'vertices') and pg_annot.vertices else []
+                if vertices:
+                    all_clouds.append({
+                        "annot_type": "Polygon",
+                        "text": text,
+                        "vertices": vertices,
+                        "rect": [pg_annot.rect.x0, pg_annot.rect.y0, pg_annot.rect.x1, pg_annot.rect.y1],
+                        "page": page_num,
+                    })
 
             for ft_annot in freetext_annots:
                 text = ft_annot.info.get("content", "").strip()
@@ -113,17 +130,26 @@ class PdfAnnotationParser:
                 rect = ft_annot.rect
                 author = ft_annot.info.get("title", "")
 
-                arrow_vertices = None
-                for line_annot in line_annots:
-                    if _rects_overlap(rect, line_annot.rect, tolerance=50):
-                        if hasattr(line_annot, 'vertices') and line_annot.vertices:
-                            arrow_vertices = line_annot.vertices
+                # Try to find an overlapping/nearby polygon cloud for this FreeText
+                cloud_vertices = None
+                for cloud in all_clouds:
+                    if _rects_overlap(rect, fitz.Rect(*cloud["rect"]), tolerance=80):
+                        cloud_vertices = cloud["vertices"]
                         break
 
+                # Fallback to line arrow if no cloud polygon found
+                if cloud_vertices is None:
+                    for line_annot in line_annots:
+                        if _rects_overlap(rect, line_annot.rect, tolerance=50):
+                            if hasattr(line_annot, 'vertices') and line_annot.vertices:
+                                cloud_vertices = list(line_annot.vertices)
+                            break
+
                 target_bbox = [rect.x0, rect.y0, rect.x1, rect.y1]
-                if arrow_vertices and len(arrow_vertices) >= 2:
-                    tip = arrow_vertices[-1]
-                    target_bbox = [tip[0] - 20, tip[1] - 20, tip[0] + 20, tip[1] + 20]
+                if cloud_vertices and len(cloud_vertices) >= 2:
+                    xs = [v[0] for v in cloud_vertices]
+                    ys = [v[1] for v in cloud_vertices]
+                    target_bbox = [min(xs), min(ys), max(xs), max(ys)]
 
                 action_type, confidence = infer_action_type(text)
                 annotations.append(Annotation(
@@ -131,11 +157,34 @@ class PdfAnnotationParser:
                     target_bbox=target_bbox,
                     page=page_num,
                     annot_type="FreeText",
-                    arrow_vertices=arrow_vertices,
+                    arrow_vertices=cloud_vertices,
                     author=author,
                     inferred_action=action_type,
                     confidence=confidence,
                 ))
+
+            # Also emit standalone polygon clouds that look like deletion clouds
+            for cloud in all_clouds:
+                if not cloud["text"]:
+                    # Skip if any FreeText already claimed this cloud
+                    claimed = False
+                    cloud_rect = fitz.Rect(*cloud["rect"])
+                    for ft_annot in freetext_annots:
+                        if _rects_overlap(ft_annot.rect, cloud_rect, tolerance=80):
+                            claimed = True
+                            break
+                    if claimed:
+                        continue
+                    action_type, confidence = AnnotationType.DELETE.value, 0.7
+                    annotations.append(Annotation(
+                        text="delete clouded objects",
+                        target_bbox=cloud["rect"],
+                        page=cloud["page"],
+                        annot_type="Polygon",
+                        arrow_vertices=cloud["vertices"],
+                        inferred_action=action_type,
+                        confidence=confidence,
+                    ))
 
         doc.close()
         annotations.sort(key=lambda a: (a.page, a.target_bbox[1]))

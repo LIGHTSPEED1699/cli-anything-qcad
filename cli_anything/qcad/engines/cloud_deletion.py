@@ -657,8 +657,37 @@ class CloudDeletionEngine:
 
     def run(self, dxf_path: str, pdf_path: str, out_dxf: str,
             overrides: Optional[Dict] = None,
-            reference_dxf: Optional[str] = None) -> Dict:
-        clouds = extract_clouds(pdf_path, dxf_path=reference_dxf or dxf_path)
+            reference_dxf: Optional[str] = None,
+            cloud_vertices: Optional[List[List[Tuple[float, float]]]] = None) -> Dict:
+        """Run cloud deletion.
+
+        If `cloud_vertices` is provided, only those polygon vertex lists are used
+        as clouds. Otherwise all cloud polygons are extracted from the PDF.
+        """
+        if cloud_vertices is not None:
+            affine = _calibrate_dxf_affine(reference_dxf or dxf_path, pdf_path)
+            clouds = []
+            for i, verts_pdf in enumerate(cloud_vertices):
+                verts = []
+                for v in verts_pdf:
+                    if affine is not None:
+                        dx = affine[0, 0] * v[0] + affine[1, 0] * v[1] + affine[2, 0]
+                        dy = affine[0, 1] * v[0] + affine[1, 1] * v[1] + affine[2, 1]
+                        verts.append((dx, dy))
+                    else:
+                        verts.append((v[0] / 72.0, v[1] / 72.0))
+                xs = [p[0] for p in verts]; ys = [p[1] for p in verts]
+                cx = sum(xs) / len(xs); cy = sum(ys) / len(ys)
+                side = "LEFT" if cx < 8.5 else "RIGHT"
+                vert_label = "TOP" if cy > 5.5 else "BOTTOM"
+                clouds.append(Cloud(
+                    label=f"C{i} ({side}-{vert_label})",
+                    side=side, verts=verts,
+                    bbox=(min(xs), max(xs), min(ys), max(ys)),
+                    height=max(ys) - min(ys),
+                ))
+        else:
+            clouds = extract_clouds(pdf_path, dxf_path=reference_dxf or dxf_path)
 
         # Prefer an ezdxf-built index for matching (clean DXF), but also collect the
         # set of handles that actually exist in the working (possibly corrupted) DXF.

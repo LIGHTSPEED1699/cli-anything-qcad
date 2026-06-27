@@ -145,10 +145,19 @@ class MarkupPipeline:
         result = None
 
         # Cloud deletion runs on the *original* clean DXF, not the ezdxf-rewritten working_dxf.
-        if category.name in ("delete", "property_change") and "cloud" in text.lower():
+        if category.name in ("delete", "property_change") and (
+            "cloud" in text.lower() or
+            (annot.get("arrow_vertices") and len(annot.get("arrow_vertices", [])) >= 3)
+        ):
             cloud_overrides = dict(overrides or {})
             cloud_overrides.setdefault("preserve", False)
-            result = self.cloud.run(self._original_dxf, self._pdf_path, out_dxf, cloud_overrides)
+            # Pass only this annotation's cloud vertices so each task deletes exactly its cloud(s)
+            cv = annot.get("arrow_vertices")
+            if cv and len(cv) >= 2:
+                cloud_vertices = [cv]
+            else:
+                cloud_vertices = None
+            result = self.cloud.run(self._original_dxf, self._pdf_path, out_dxf, cloud_overrides, cloud_vertices=cloud_vertices)
             if result and result.get("success"):
                 # Build the cloud-deleted DXF from the *clean* original so the handles actually exist.
                 from cli_anything.qcad.engines.delete_by_handle import delete_handles
@@ -165,15 +174,18 @@ class MarkupPipeline:
         elif category.default_tier in ("T2", "T3"):
             annot["category"] = category.name
             result = self.qcad_ecma.execute(annot, working_dxf)
+            # QCAD ECMA backends edit working_dxf in place.
+            if result and result.get("success") and Path(working_dxf).exists():
+                shutil.copy(working_dxf, out_dxf)
         else:
             annot["category"] = category.name
             result = self.vlm_x11.execute(annot, working_dxf)
 
-        if result and result.get("success"):
+        if result and result.get("success") and Path(out_dxf).exists():
             shutil.copy(out_dxf, working_dxf)
 
         task["result"] = result or {"backend": "none", "success": False}
-        task["success"] = result.get("success", False) if result else False
+        task["success"] = (result.get("success", False) and Path(out_dxf).exists()) if result else False
 
         if artifact_root:
             pre_stage = str(artifact_root / f"stage_{idx:02d}_{category.name}_pre.dxf")
