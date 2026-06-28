@@ -1,26 +1,40 @@
-"""Hybrid pipeline: dispatch annotations to vendored QCAD-VLM-automation logic."""
+"""Generic markup pipeline: planner -> task-type engines -> verify.
+
+This replaces the old pair-specific dispatch with a reusable architecture:
+  1. Ingest PDF annotations.
+  2. Calibrate PDF coordinates to DXF.
+  3. Classify each annotation into a task type (rule + VLM).
+  4. Route to the correct engine.
+  5. Execute tasks in order, checkpointing after each.
+  6. Verify per-task with render + pixel diff.
+  7. Export final DXF back to DWG.
+"""
 import json
-import os
 import shutil
-import sys
+import traceback
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from cli_anything.qcad.backends.dwg_converter import DwgConverter
-from cli_anything.qcad.utils.layer_fix import fix_layer_visibility
+from cli_anything.qcad.core.planner import MarkupPlanner, Task
+from cli_anything.qcad.engines.delete_clouded_entities import DeleteCloudedEntitiesEngine
+from cli_anything.qcad.engines.text_value import ChangeTextValueEngine, AddTextLabelEngine
+from cli_anything.qcad.engines.clone_terminal_wires import CloneTerminalWiresEngine
+from cli_anything.qcad.engines.extra_ops import ResizeBoundingBoxEngine, MarkSpareWiresEngine
 from cli_anything.qcad.utils.visual_verify import QcadRenderer
-
-VLM_DIR = Path(__file__).resolve().parent.parent / "vlm_automation"
-if str(VLM_DIR) not in sys.path:
-    sys.path.insert(0, str(VLM_DIR))
-
-from pair1_executor import execute_pair1
-from pair2_executor import execute_pair2
-from pair3_executor import execute_pair3
 
 
 class MarkupPipeline:
-    """Run the full DWG markup pipeline using proven QCAD-VLM-automation backends."""
+    """Run the full DWG markup pipeline using reusable task-type engines."""
+
+    _engines = {
+        "delete_clouded_entities": DeleteCloudedEntitiesEngine,
+        "change_text_value": ChangeTextValueEngine,
+        "add_text_label": AddTextLabelEngine,
+        "clone_terminal_wires": CloneTerminalWiresEngine,
+        "resize_bounding_box": ResizeBoundingBoxEngine,
+        "mark_spare_wires": MarkSpareWiresEngine,
+    }
 
     def __init__(
         self,
@@ -35,10 +49,10 @@ class MarkupPipeline:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.qcad_bin = Path(qcad_bin) if qcad_bin else None
         self.converter = DwgConverter(qcad_bin=str(self.qcad_bin) if self.qcad_bin else None)
+        self.planner = MarkupPlanner()
 
     def run(self) -> Dict[str, Any]:
-        out_root = self.output_dir
-        work = out_root / "work"
+        work = self.output_dir / "work"
         work.mkdir(parents=True, exist_ok=True)
 
         dwg_work = work / self.dwg_path.name
@@ -50,79 +64,93 @@ class MarkupPipeline:
         if not self.converter.dwg_to_dxf(str(dwg_work), str(original_dxf)):
             return {"success": False, "error": "DWG→DXF conversion failed"}
 
-        annotations = self._extract_annotations(str(pdf_work))
+        # Plan tasks
+        tasks = self.planner.plan(str(pdf_work), str(original_dxf))
+        if not tasks:
+            return {"success": False, "error": "No tasks generated from PDF annotations"}
 
-        # Dispatch by file stem / annotation content
-        texts = " ".join(a.get("text", "").lower() for a in annotations)
-        stem = self.dwg_path.stem
+        # Sort tasks: deletions first, then changes/adds, then mark spare last
+        order = {
+            "delete_clouded_entities": 0,
+            "resize_bounding_box": 1,
+            "change_text_value": 2,
+            "add_text_label": 3,
+            "clone_terminal_wires": 4,
+            "mark_spare_wires": 9,
+        }
+        tasks.sort(key=lambda t: (order.get(t.task_type, 5), t.task_id))
 
-        # Pair 3: clone wires from rows 4/5/6 to 7/8/9
-        if stem == "3" or ("copy" in texts and "4" in texts and "7" in texts):
-            return self._run_pair3(str(original_dxf), str(pdf_work), annotations)
+        # Execute tasks with checkpoints
+        current_dxf = str(original_dxf)
+        task_reports: List[Dict[str, Any]] = []
+        for task in tasks:
+            next_dxf = str(work / f"checkpoint_{task.task_id}.dxf")
+            report = self._execute_task(task, current_dxf, next_dxf)
+            if report.get("success", True):
+                current_dxf = next_dxf
+            task_reports.append(report)
 
-        # Pair 2: cloud deletion + text changes (free-text instructions present)
-        if stem == "2" or ("change" in texts) or ("add" in texts and '"' in texts) or ("remove" in texts and "circled" in texts):
-            return self._run_pair2(str(original_dxf), str(pdf_work), annotations)
+        # Export final DWG
+        final_dxf = work / "final.dxf"
+        shutil.copy2(current_dxf, final_dxf)
+        final_dwg = self.output_dir / (self.dwg_path.stem + "_modified.dwg")
+        if not self.converter.dxf_to_dwg(str(final_dxf), str(final_dwg)):
+            return {"success": False, "error": "Final DXF→DWG conversion failed"}
 
-        # Pair 1: cloud deletion only (drawing 1)
-        return self._run_pair1(str(original_dxf), str(pdf_work), annotations)
+        # Final comparison
+        comp = self._compare(str(self.dwg_path), str(final_dwg), self.output_dir / "comparison.png")
 
-    def _extract_annotations(self, pdf_path: str) -> List[Dict[str, Any]]:
+        report = {
+            "success": True,
+            "tasks": [t.to_dict() for t in tasks],
+            "task_reports": task_reports,
+            "final_dwg": str(final_dwg),
+            "comparison": comp,
+        }
+        (self.output_dir / "pipeline_report.json").write_text(
+            json.dumps(report, indent=2, default=str)
+        )
+        return report
+
+    def _execute_task(self, task: Task, input_dxf: str, output_dxf: str) -> Dict[str, Any]:
+        engine_cls = self._engines.get(task.task_type)
+        if not engine_cls:
+            shutil.copy2(input_dxf, output_dxf)
+            return {"task_id": task.task_id, "success": False,
+                    "error": f"no engine for {task.task_type}"}
+
+        engine = engine_cls()
+        params = dict(task.parameters)
+        if task.dxf_region:
+            if task.task_type == "delete_clouded_entities":
+                params.setdefault("regions", []).append(task.dxf_region)
+            elif task.task_type == "mark_spare_wires":
+                params["region"] = task.dxf_region
+            elif task.task_type in ("change_text_value", "add_text_label"):
+                if "point" not in params:
+                    reg = task.dxf_region
+                    if reg.get("type") == "bbox":
+                        c = reg["coords"]
+                        params["point"] = (c[0], c[3])
+                        params["near_point"] = params["point"]
+                    elif reg.get("type") == "polygon":
+                        bbox = reg.get("bbox")
+                        if bbox:
+                            params["point"] = (bbox[0], bbox[3])
+                            params["near_point"] = params["point"]
+                    elif reg.get("type") == "point":
+                        params["point"] = reg["coords"]
+                        params["near_point"] = reg["coords"]
+
         try:
-            import fitz
-            doc = fitz.open(pdf_path)
-            annots = []
-            for page_num, page in enumerate(doc):
-                for a in page.annots() or []:
-                    atype = a.type[1]
-                    r = a.rect
-                    annots.append({
-                        "page": page_num,
-                        "type": atype,
-                        "text": (a.get_text() or "").strip(),
-                        "target_bbox": [r.x0, r.y0, r.x1, r.y1],
-                        "vertices": a.vertices if hasattr(a, "vertices") else None,
-                        "inferred_action": self._infer_action((a.get_text() or "").strip()),
-                    })
-            doc.close()
-            return annots
+            result = engine.run(input_dxf, params, output_dxf)
+            return {"task_id": task.task_id, "task_type": task.task_type,
+                    "success": True, **result}
         except Exception as e:
-            return [{"error": str(e)}]
-
-    @staticmethod
-    def _infer_action(text: str) -> str:
-        lowered = text.lower()
-        if "delete" in lowered or "remove" in lowered:
-            return "delete"
-        if "copy" in lowered or "clone" in lowered:
-            return "copy"
-        if "replace" in lowered or "change" in lowered:
-            return "change"
-        return "unknown"
-
-    def _run_pair1(self, dxf_in: str, pdf_path: str, annotations: List[Dict[str, Any]]) -> Dict[str, Any]:
-        dwg_out = str(self.output_dir / (self.dwg_path.stem + "_modified.dwg"))
-        res = execute_pair1(dxf_in, pdf_path, dwg_out)
-        comp = self._compare(str(self.dwg_path), dwg_out, self.output_dir / "comparison.png")
-        report = {**res, "mode": "pair1", "annotations": annotations, "comparison": comp}
-        (self.output_dir / "pipeline_report.json").write_text(json.dumps(report, indent=2, default=str))
-        return report
-
-    def _run_pair2(self, dxf_in: str, pdf_path: str, annotations: List[Dict[str, Any]]) -> Dict[str, Any]:
-        dwg_out = str(self.output_dir / (self.dwg_path.stem + "_modified.dwg"))
-        res = execute_pair2(dxf_in, pdf_path, dwg_out)
-        comp = self._compare(str(self.dwg_path), dwg_out, self.output_dir / "comparison.png")
-        report = {**res, "mode": "pair2", "annotations": annotations, "comparison": comp}
-        (self.output_dir / "pipeline_report.json").write_text(json.dumps(report, indent=2, default=str))
-        return report
-
-    def _run_pair3(self, dxf_in: str, pdf_path: str, annotations: List[Dict[str, Any]]) -> Dict[str, Any]:
-        dwg_out = str(self.output_dir / (self.dwg_path.stem + "_modified.dwg"))
-        res = execute_pair3(dxf_in, pdf_path, dwg_out)
-        comp = self._compare(str(self.dwg_path), dwg_out, self.output_dir / "comparison.png")
-        report = {**res, "mode": "pair3", "annotations": annotations, "comparison": comp}
-        (self.output_dir / "pipeline_report.json").write_text(json.dumps(report, indent=2, default=str))
-        return report
+            shutil.copy2(input_dxf, output_dxf)
+            return {"task_id": task.task_id, "task_type": task.task_type,
+                    "success": False, "error": str(e),
+                    "traceback": traceback.format_exc()}
 
     def _compare(self, original_dwg: str, modified_dwg: str, output_png: Path) -> Dict[str, Any]:
         renderer = QcadRenderer(qcad_dir=str(self.qcad_bin.parent) if self.qcad_bin else None)
