@@ -112,13 +112,15 @@ class DwgConverter:
             ]
             env = os.environ.copy()
             env.setdefault("QT_QPA_PLATFORM", "offscreen")
+            qcad_dir = Path(self.qcad_bin).parent
+            env["LD_LIBRARY_PATH"] = f"{qcad_dir}:{qcad_dir / 'plugins'}:{env.get('LD_LIBRARY_PATH', '')}"
             result = subprocess.run(cmd, capture_output=True, text=True, env=env)
             return result.returncode == 0 and Path(dwg_path).exists()
 
-        # fallback inline script
+        # Fallback to inline script if ECMA file missing
         safe_dxf = dxf_path.replace("'", "\\'")
         safe_dwg = dwg_path.replace("'", "\\'")
-        script = f"""include(\"scripts/library.js\"); var storage = new RMemoryStorage(); var spatialIndex = new RSpatialIndexSimple(); var doc = new RDocument(storage, spatialIndex); var di = new RDocumentInterface(doc); var r1 = di.importFile('{safe_dxf}'); if (r1 !== RDocumentInterface.IoErrorNoError) {{ qcad.quit(1); }} var formats = ['DWG R32 (2018)', 'R32 (2018) DWG', 'DWG', 'R32']; for (var i = 0; i < formats.length; i++) {{ if (di.exportFile('{safe_dwg}', formats[i])) {{ QCoreApplication.quit(0); }} }} qcad.quit(1);"""
+        script = f"""include(\"scripts/library.js\"); var storage = new RMemoryStorage(); var spatialIndex = new RSpatialIndexSimple(); var doc = new RDocument(storage, spatialIndex); var di = new RDocumentInterface(doc); var r1 = di.importFile('{safe_dxf}'); if (r1 !== RDocumentInterface.IoErrorNoError) {{ qcad.quit(1); }} di.exportFile('{safe_dwg}', 'R32 (2018) DWG'); QCoreApplication.quit(0);"""
         return self._run_qcad_script(script)
 
     def _run_qcad_script(self, script: str) -> bool:
@@ -131,5 +133,7 @@ class DwgConverter:
         cmd = [qcad, "-no-gui", "-platform", "offscreen", "-allow-multiple-instances", "-autostart", script_path]
         env = os.environ.copy()
         env.setdefault("QT_QPA_PLATFORM", "offscreen")
+        qcad_dir = Path(qcad).parent
+        env["LD_LIBRARY_PATH"] = f"{qcad_dir}:{qcad_dir / 'plugins'}:{env.get('LD_LIBRARY_PATH', '')}"
         result = subprocess.run(cmd, capture_output=True, text=True, env=env)
         return result.returncode == 0

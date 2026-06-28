@@ -1,6 +1,7 @@
 """Visual verification: render and compare DWG/DXF outputs."""
 import json
 import os
+import subprocess
 import base64
 import urllib.request
 from dataclasses import dataclass, asdict
@@ -10,107 +11,69 @@ from typing import Any, Dict, List, Optional
 from PIL import Image, ImageChops
 
 
-@dataclass
-class VerificationResult:
-    status: str
-    pixel_change_pct: float
-    vlm_confidence: Optional[float] = None
-    vlm_reasoning: Optional[str] = None
-    original_png: Optional[str] = None
-    modified_png: Optional[str] = None
-    diff_png: Optional[str] = None
-    error: Optional[str] = None
-    renderer_used: str = ""
-    vlm: Dict = None
+class QcadRenderer:
+    """Render DWG/DXF to PNG using QCAD's dwg2bmp CLI."""
 
-    def __post_init__(self):
-        if self.vlm is None:
-            self.vlm = {}
+    def __init__(self, qcad_dir: Optional[str] = None):
+        self.qcad_dir = Path(qcad_dir) if qcad_dir else Path('/home/hongbin/opt/qcad-3.32.7-pro-linux-qt6-x86_64')
+        self.dwg2bmp = self.qcad_dir / 'dwg2bmp'
 
-    def to_dict(self) -> Dict[str, Any]:
-        return asdict(self)
-
-
-class VisualVerifier:
-    """Compare original vs modified drawing renders."""
-
-    def __init__(self, renderer=None):
-        self.renderer = renderer
-
-    def render(self, file_path: str, output_png: str) -> bool:
-        if self.renderer is None:
-            return False
-        return self.renderer.render(file_path, output_png)
-
-    def compare(self, original_png: str, modified_png: str,
-                annotations: List[Dict[str, Any]]) -> VerificationResult:
+    def render(self, file_path: str, output_png: str, resolution: int = 150) -> bool:
+        out_bmp = Path(output_png).with_suffix('.bmp')
+        cmd = [str(self.dwg2bmp), '-o', str(out_bmp), '-r', str(resolution), file_path]
+        env = os.environ.copy()
+        env.setdefault('DISPLAY', ':0')
+        env.setdefault('QT_QPA_PLATFORM', 'offscreen')
+        env['LD_LIBRARY_PATH'] = f"{self.qcad_dir}:{self.qcad_dir / 'plugins'}:{env.get('LD_LIBRARY_PATH', '')}"
         try:
-            orig = Image.open(original_png).convert("RGB")
-            mod = Image.open(modified_png).convert("RGB")
+            r = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=180)
+            if not out_bmp.exists() or out_bmp.stat().st_size == 0:
+                return False
+            Image.open(out_bmp).convert('RGB').save(output_png)
+            return True
+        except Exception:
+            return False
+
+    def compare(self, original_path: str, modified_path: str, output_png: str) -> Dict[str, Any]:
+        orig_png = str(Path(original_path).with_suffix('')) + '_orig_render.png'
+        mod_png = str(Path(modified_path).with_suffix('')) + '_mod_render.png'
+        ok1 = self.render(original_path, orig_png)
+        ok2 = self.render(modified_path, mod_png)
+        if not (ok1 and ok2):
+            return {"error": "Rendering failed"}
+        return self._pixel_compare(orig_png, mod_png, output_png)
+
+    @staticmethod
+    def _pixel_compare(orig_png: str, mod_png: str, output_png: str) -> Dict[str, Any]:
+        try:
+            orig = Image.open(orig_png).convert('RGB')
+            mod = Image.open(mod_png).convert('RGB')
             w = min(orig.width, mod.width)
             h = min(orig.height, mod.height)
-            orig_c = orig.crop((0, 0, w, h)).convert("L")
-            mod_c = mod.crop((0, 0, w, h)).convert("L")
+            orig_c = orig.crop((0, 0, w, h))
+            mod_c = mod.crop((0, 0, w, h))
 
-            diff = ImageChops.difference(orig_c, mod_c)
+            diff = ImageChops.difference(orig_c.convert('L'), mod_c.convert('L'))
             import numpy as np
             np_diff = np.array(diff)
-            nonzero = int(np.count_nonzero(np_diff > 20))
-            total = np_diff.size
-            pct = 100.0 * nonzero / total if total else 0.0
+            mask = np_diff > 20
+            pct = 100.0 * mask.sum() / mask.size if mask.size else 0.0
 
-            diff_path = str(Path(modified_png).with_suffix("")) + "_diff.png"
-            out = Image.new("RGB", (w, h))
-            out.paste(orig.crop((0, 0, w, h)), (0, 0))
-            arr = np.array(out)
-            arr[np_diff > 20] = [255, 0, 0]
-            Image.fromarray(arr).save(diff_path)
+            strip = Image.new('RGB', (w * 3, h))
+            strip.paste(orig_c, (0, 0))
+            strip.paste(mod_c, (w, 0))
+            red = np.array(orig_c)
+            red[mask] = [255, 0, 0]
+            strip.paste(Image.fromarray(red), (w * 2, 0))
+            strip.save(output_png)
 
-            status = "PASSED" if pct > 0.1 else "FAILED"
-            return VerificationResult(
-                status=status,
-                pixel_change_pct=pct,
-                original_png=original_png,
-                modified_png=modified_png,
-                diff_png=diff_path,
-                renderer_used="pixel_diff",
-            )
+            return {
+                "pixel_change_pct": round(pct, 2),
+                "status": "CHANGED" if pct > 0.1 else "UNCHANGED",
+                "original_png": orig_png,
+                "modified_png": mod_png,
+                "output_png": output_png,
+                "diff_pixels": int(mask.sum()),
+            }
         except Exception as e:
-            return VerificationResult(
-                status="ERROR",
-                pixel_change_pct=0.0,
-                error=str(e),
-                renderer_used="pixel_diff",
-            )
-
-    def vlm_verify(self, image_path: str, question: str,
-                   ollama_url: str = "http://192.168.2.15:11434",
-                   model: str = "gemma4:31b-cloud") -> Dict[str, Any]:
-        with open(image_path, "rb") as f:
-            image_b64 = base64.b64encode(f.read()).decode()
-        payload = {
-            "model": model,
-            "messages": [
-                {"role": "user", "content": question, "images": [image_b64]}
-            ],
-            "stream": False,
-            "options": {"num_predict": 512, "temperature": 0.3},
-        }
-        try:
-            req = urllib.request.Request(
-                f"{ollama_url}/api/chat",
-                data=json.dumps(payload).encode(),
-                headers={"Content-Type": "application/json"},
-                method="POST",
-            )
-            with urllib.request.urlopen(req, timeout=60) as resp:
-                result = json.loads(resp.read().decode())
-                answer = result.get("message", {}).get("content", "")
-                return {
-                    "answer": answer,
-                    "pass": answer.strip().upper().startswith("YES"),
-                    "model": model,
-                    "eval_count": result.get("eval_count", 0),
-                }
-        except Exception as e:
-            return {"answer": f"ERROR: {e}", "pass": False, "model": model, "error": str(e)}
+            return {"error": str(e)}
