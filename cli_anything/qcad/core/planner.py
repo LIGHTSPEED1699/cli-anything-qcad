@@ -23,6 +23,9 @@ class TaskType(Enum):
     CLONE_TERMINAL_WIRES = "clone_terminal_wires"
     RESIZE_BOUNDING_BOX = "resize_bounding_box"
     MARK_SPARE_WIRES = "mark_spare_wires"
+    ADD_DIMENSION = "add_dimension"
+    ADD_LEADER = "add_leader"
+    MOVE_ENTITY = "move_entity"
     UNKNOWN = "unknown"
 
 
@@ -54,6 +57,9 @@ Available task types:
 - clone_terminal_wires: copy terminal row wiring to another row
 - resize_bounding_box: shrink a box around a component
 - mark_spare_wires: mark wires as spare at both ends
+- add_dimension: add linear/angular dimension between two points
+- add_leader: add leader line with text callout
+- move_entity: move an entity to a new location
 
 Return ONLY a JSON object with no markdown formatting:
 {{
@@ -255,8 +261,15 @@ def _infer_task_from_annotation(annot: Dict[str, Any], affine: Optional[Any],
     elif cat_name in ("clone", "reorder"):
         task_type = TaskType.CLONE_TERMINAL_WIRES.value
         constraints = ["do not clone terminal INSERT blocks", "deduplicate geometry"]
-    elif cat_name == "property_change":
+    elif cat_name == "resize":
         task_type = TaskType.RESIZE_BOUNDING_BOX.value
+    elif cat_name == "dimension":
+        task_type = TaskType.ADD_DIMENSION.value
+        parameters.setdefault("style", "Standard")
+    elif cat_name == "leader":
+        task_type = TaskType.ADD_LEADER.value
+    elif cat_name == "move":
+        task_type = TaskType.MOVE_ENTITY.value
 
     # If rule confidence is low or parameters missing, call VLM
     vlm_needed = confidence < 0.7 or not parameters or task_type == TaskType.UNKNOWN.value

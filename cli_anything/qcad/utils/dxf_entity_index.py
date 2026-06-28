@@ -63,11 +63,8 @@ class DxfEntityIndex:
         if self._loaded:
             return
 
-        print(f"Loading DXF: {self.dxf_path}")
         doc = ezdxf.readfile(self.dxf_path)
         msp = doc.modelspace()
-
-        print(f"  Modelspace entities: {len(msp)}")
 
         # First pass: collect block definitions for INSERT expansion
         block_entities: Dict[str, List[DxfEntity]] = {}
@@ -107,7 +104,6 @@ class DxfEntityIndex:
 
         self._build_index()
         self._loaded = True
-        print(f"  Indexed {len(self.entities)} searchable entities")
 
     def _parse_entity(self, entity, block_name: Optional[str] = None) -> Optional[DxfEntity]:
         """Parse a single DXF entity into a DxfEntity."""
@@ -259,7 +255,6 @@ class DxfEntityIndex:
         }
         with open(path, 'w') as f:
             json.dump(data, f, indent=2)
-        print(f"Exported {len(self.entities)} entities to {path}")
 
     def get_entity_by_handle(self, handle: str) -> Optional[DxfEntity]:
         """Get entity by handle."""

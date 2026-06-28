@@ -5,12 +5,37 @@ from pathlib import Path
 
 import click
 
+from cli_anything.qcad.backends.dwg_converter import DwgConverter
 from cli_anything.qcad.core.session import JobSession
 from cli_anything.qcad.pipelines.markup_pipeline import MarkupPipeline
 from cli_anything.qcad.utils.pdf_parser import PdfAnnotationParser
-from cli_anything.qcad.backends.dwg_converter import DwgConverter
-from cli_anything.qcad.utils.visual_verify import VisualVerifier
 from cli_anything.qcad.utils.render import QcadRenderer
+from cli_anything.qcad.utils.visual_verifier import QcadVlmVerifier
+
+
+class VisualVerifier:
+    """High-level wrapper: render DWG and ask a yes/no VLM question."""
+
+    def __init__(self, renderer=None, qcad_bin: str = None, model: str = None):
+        if renderer is not None:
+            self.renderer = renderer
+            self.qcad_bin = None
+        else:
+            self.renderer = QcadRenderer(qcad_bin=qcad_bin)
+            self.qcad_bin = qcad_bin
+        self.model = model
+
+    def verify(self, dwg_path: str, question: str) -> dict:
+        qcad_dir = None
+        if self.qcad_bin:
+            qcad_dir = self.qcad_bin
+        elif hasattr(self.renderer, 'qcad_dir'):
+            qcad_dir = str(self.renderer.qcad_dir)
+        elif hasattr(self.renderer, 'qcad_bin'):
+            qcad_dir = str(Path(self.renderer.qcad_bin).parent)
+        qcad_bin = str(Path(qcad_dir) / 'qcad') if qcad_dir else None
+        verifier = QcadVlmVerifier(qcad_bin=qcad_bin, model=self.model)
+        return verifier.verify(dwg_path, question)
 
 
 @click.group(invoke_without_command=True)
@@ -35,10 +60,11 @@ def cli(ctx, json_output, qcad, oda, overrides):
 @click.argument("pdf_path")
 @click.option("--output", "-o", default=None, help="Output DWG path.")
 @click.option("--artifacts", "-a", default=None, help="Directory to save per-step artifacts.")
-@click.option("--skip-vlm", is_flag=True, help="Skip final VLM verification call.")
+@click.option("--skip-vlm", is_flag=True, help="Skip final and per-task VLM verification calls.")
+@click.option("--per-task-vlm", is_flag=True, help="Run VLM verification after each successful task.")
 @click.option("--dry-run", is_flag=True, help="Plan only, do not execute edits.")
 @click.pass_context
-def apply(ctx, dwg_path, pdf_path, output, artifacts, skip_vlm, dry_run):
+def apply(ctx, dwg_path, pdf_path, output, artifacts, skip_vlm, per_task_vlm, dry_run):
     """Apply PDF markups to a DWG file and verify the result."""
     converter = DwgConverter(qcad_bin=ctx.obj.get("qcad"), oda_converter=ctx.obj.get("oda"))
     overrides = None
@@ -65,10 +91,11 @@ def apply(ctx, dwg_path, pdf_path, output, artifacts, skip_vlm, dry_run):
         converter=converter,
         verifier=verifier,
         qcad_bin=ctx.obj.get("qcad"),
+        per_task_verify=per_task_vlm,
     )
     job = pipeline.run(dwg_path, pdf_path, output_dwg=output, overrides=overrides,
                        artifacts_dir=artifacts, skip_vlm=skip_vlm)
-    _emit(ctx, job.to_dict())
+    _emit(ctx, job)
 
 
 @cli.command()
