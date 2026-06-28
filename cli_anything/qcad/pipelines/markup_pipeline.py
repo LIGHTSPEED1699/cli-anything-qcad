@@ -55,6 +55,7 @@ class MarkupPipeline:
         self.qcad_bin = Path(qcad_bin) if qcad_bin else None
         self.per_task_verify = per_task_verify
         self.max_verify_retries = max_verify_retries
+        self.max_engine_retries = 1
         self.planner = MarkupPlanner()
 
     def run(
@@ -104,12 +105,12 @@ class MarkupPipeline:
 
         for task in tasks:
             next_dxf = str(work / f"checkpoint_{task.task_id}.dxf")
-            report = self._execute_task(current_dxf, task, next_dxf)
+            report, attempt = self._execute_task_with_retry(current_dxf, task, next_dxf)
             task_reports.append(report)
 
             if report.get("success") and self.per_task_verify and self.verifier and not skip_vlm:
                 verify_png = str(work / f"verify_{task.task_id}.png")
-                renderer.compare(current_dxf, next_dxf, verify_png)
+                renderer.compare(current_dxf, next_dxf, verify_png, converter=self.converter)
                 vq = self._task_verification_prompt(task)
                 ok, vlm = self._verify_with_retry(next_dxf, vq)
                 report["verify"] = {"pass": ok, "answer": vlm, "png": verify_png}
@@ -157,7 +158,8 @@ class MarkupPipeline:
         )
         return report_data
 
-    def _execute_task(self, input_dxf: str, task: Task, output_dxf: str) -> Dict[str, Any]:
+    def _execute_task(self, input_dxf: str, task: Task, output_dxf: str,
+                        params_override: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         engine_cls = self._engines.get(task.task_type)
         if not engine_cls:
             shutil.copy2(input_dxf, output_dxf)
@@ -166,6 +168,8 @@ class MarkupPipeline:
 
         engine = engine_cls()
         params = dict(task.parameters)
+        if params_override:
+            params.update(params_override)
         if task.dxf_region:
             if task.task_type == "delete_clouded_entities":
                 params.setdefault("regions", []).append(task.dxf_region)
@@ -196,6 +200,44 @@ class MarkupPipeline:
             return {"task_id": task.task_id, "task_type": task.task_type,
                     "success": False, "error": str(e),
                     "traceback": traceback.format_exc()}
+
+    def _execute_task_with_retry(self, input_dxf: str, task: Task,
+                                  output_dxf: str) -> tuple:
+        """Run task. If it fails, optionally perturb parameters and retry once."""
+        report = self._execute_task(input_dxf, task, output_dxf)
+        attempt = 1
+        if not report.get("success") and self.max_engine_retries > 0:
+            perturbed = self._perturb_params(task.task_type, dict(task.parameters), attempt)
+            report = self._execute_task(input_dxf, task, output_dxf, perturbed)
+            report["retried"] = True
+            report["retry_params"] = perturbed
+            attempt = 2
+        return report, attempt
+
+    def _perturb_params(self, task_type: str, params: Dict[str, Any],
+                        attempt: int) -> Dict[str, Any]:
+        """Adjust engine parameters to recover from failures or VLM rejection."""
+        p = dict(params)
+        if task_type == "delete_clouded_entities":
+            # Be more conservative: shrink tolerance to avoid over-deletion
+            p["tolerance"] = p.get("tolerance", 0.0) - 0.5 * attempt
+        elif task_type == "resize_bounding_box":
+            # Expand the search margin
+            p["margin"] = p.get("margin", 0.0) + 2.0 * attempt
+        elif task_type == "change_text_value":
+            p["fuzzy"] = True
+            p["threshold"] = max(0.5, p.get("threshold", 0.9) - 0.2 * attempt)
+        elif task_type == "mark_spare_wires":
+            p["label_offset"] = p.get("label_offset", 2.0) + 2.0 * attempt
+        elif task_type == "clone_terminal_wires":
+            p["tolerance"] = p.get("tolerance", 1.0) + 1.0 * attempt
+        elif task_type == "add_text_label":
+            p["height"] = p.get("height", 2.5) * (1 + 0.2 * attempt)
+        elif task_type in ("add_dimension", "add_leader"):
+            p["offset"] = p.get("offset", 5.0) + 2.0 * attempt
+        elif task_type == "move_entity":
+            p["tol"] = p.get("tol", 5.0) + 3.0 * attempt
+        return p
 
     def _verify_with_retry(self, dwg_path: str, question: str) -> tuple:
         for attempt in range(self.max_verify_retries):

@@ -1,4 +1,5 @@
 """CLI entry point for cli-anything-qcad."""
+import glob
 import json
 import sys
 from pathlib import Path
@@ -17,23 +18,17 @@ class VisualVerifier:
     """High-level wrapper: render DWG and ask a yes/no VLM question."""
 
     def __init__(self, renderer=None, qcad_bin: str = None, model: str = None):
+        self.qcad_bin = qcad_bin
+        self.model = model
         if renderer is not None:
             self.renderer = renderer
-            self.qcad_bin = None
         else:
             self.renderer = QcadRenderer(qcad_bin=qcad_bin)
-            self.qcad_bin = qcad_bin
-        self.model = model
 
     def verify(self, dwg_path: str, question: str) -> dict:
-        qcad_dir = None
-        if self.qcad_bin:
-            qcad_dir = self.qcad_bin
-        elif hasattr(self.renderer, 'qcad_dir'):
-            qcad_dir = str(self.renderer.qcad_dir)
-        elif hasattr(self.renderer, 'qcad_bin'):
-            qcad_dir = str(Path(self.renderer.qcad_bin).parent)
-        qcad_bin = str(Path(qcad_dir) / 'qcad') if qcad_dir else None
+        qcad_bin = self.qcad_bin
+        if not qcad_bin and hasattr(self.renderer, 'qcad_dir'):
+            qcad_bin = str(self.renderer.qcad_dir / 'qcad')
         verifier = QcadVlmVerifier(qcad_bin=qcad_bin, model=self.model)
         return verifier.verify(dwg_path, question)
 
@@ -96,6 +91,60 @@ def apply(ctx, dwg_path, pdf_path, output, artifacts, skip_vlm, per_task_vlm, dr
     job = pipeline.run(dwg_path, pdf_path, output_dwg=output, overrides=overrides,
                        artifacts_dir=artifacts, skip_vlm=skip_vlm)
     _emit(ctx, job)
+
+
+@cli.command()
+@click.argument("directory")
+@click.option("--output-dir", "-o", required=True, help="Base directory for batch results.")
+@click.option("--pattern", "-p", default="*.dwg", help="DWG file glob pattern.")
+@click.option("--pdf-suffix", default=".pdf", help="Suffix to map DWG → PDF markup file.")
+@click.option("--skip-vlm", is_flag=True, help="Skip VLM verification calls.")
+@click.option("--per-task-vlm", is_flag=True, help="Run VLM verification after each task.")
+@click.pass_context
+def batch(ctx, directory, output_dir, pattern, pdf_suffix, skip_vlm, per_task_vlm):
+    """Run the apply pipeline on every DWG file in a directory."""
+    base = Path(directory)
+    out_base = Path(output_dir)
+    out_base.mkdir(parents=True, exist_ok=True)
+
+    converter = DwgConverter(qcad_bin=ctx.obj.get("qcad"), oda_converter=ctx.obj.get("oda"))
+    renderer = QcadRenderer(qcad_bin=ctx.obj.get("qcad"))
+    verifier = VisualVerifier(renderer=renderer)
+
+    pipeline = MarkupPipeline(
+        pdf_parser=PdfAnnotationParser(),
+        converter=converter,
+        verifier=verifier,
+        qcad_bin=ctx.obj.get("qcad"),
+        per_task_verify=per_task_vlm,
+    )
+
+    results = []
+    for dwg_path in sorted(base.glob(pattern)):
+        pdf_path = dwg_path.with_suffix(pdf_suffix)
+        if not pdf_path.exists():
+            pdf_path = Path(str(dwg_path).replace('.dwg', pdf_suffix))
+        if not pdf_path.exists():
+            results.append({"input_dwg": str(dwg_path), "success": False,
+                            "error": f"PDF not found: {pdf_path}"})
+            continue
+        job_out = out_base / dwg_path.stem
+        out_dwg = job_out / f"{dwg_path.stem}_modified.dwg"
+        try:
+            job = pipeline.run(str(dwg_path), str(pdf_path), output_dwg=str(out_dwg),
+                               artifacts_dir=str(job_out), skip_vlm=skip_vlm)
+            results.append({"input_dwg": str(dwg_path), "success": job.get("success"),
+                            "output_dwg": str(out_dwg)})
+        except Exception as e:
+            results.append({"input_dwg": str(dwg_path), "success": False, "error": str(e)})
+
+    summary = {
+        "total": len(results),
+        "passed": sum(1 for r in results if r.get("success")),
+        "failed": sum(1 for r in results if not r.get("success")),
+        "results": results,
+    }
+    _emit(ctx, summary)
 
 
 @cli.command()

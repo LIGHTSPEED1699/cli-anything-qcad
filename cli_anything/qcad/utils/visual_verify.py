@@ -1,12 +1,11 @@
 """Visual verification: render and compare DWG/DXF outputs."""
+import base64
 import json
 import os
 import subprocess
-import base64
 import urllib.request
-from dataclasses import dataclass, asdict
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 from PIL import Image, ImageChops
 
@@ -17,6 +16,7 @@ class QcadRenderer:
     def __init__(self, qcad_dir: Optional[str] = None):
         self.qcad_dir = Path(qcad_dir) if qcad_dir else Path('/home/hongbin/opt/qcad-3.32.7-pro-linux-qt6-x86_64')
         self.dwg2bmp = self.qcad_dir / 'dwg2bmp'
+        self._converter = None
 
     def render(self, file_path: str, output_png: str, resolution: int = 150) -> bool:
         out_bmp = Path(output_png).with_suffix('.bmp')
@@ -34,14 +34,37 @@ class QcadRenderer:
         except Exception:
             return False
 
-    def compare(self, original_path: str, modified_path: str, output_png: str) -> Dict[str, Any]:
+    def compare(
+        self,
+        original_path: str,
+        modified_path: str,
+        output_png: str,
+        converter=None,
+    ) -> Dict[str, Any]:
+        # dwg2bmp needs DWG input; convert DXF if necessary.
+        orig = self._ensure_dwg(original_path, converter)
+        mod = self._ensure_dwg(modified_path, converter)
         orig_png = str(Path(original_path).with_suffix('')) + '_orig_render.png'
         mod_png = str(Path(modified_path).with_suffix('')) + '_mod_render.png'
-        ok1 = self.render(original_path, orig_png)
-        ok2 = self.render(modified_path, mod_png)
+        ok1 = self.render(orig, orig_png)
+        ok2 = self.render(mod, mod_png)
         if not (ok1 and ok2):
             return {"error": "Rendering failed"}
         return self._pixel_compare(orig_png, mod_png, output_png)
+
+    def _ensure_dwg(self, path: str, converter=None) -> str:
+        if Path(path).suffix.lower() == ".dwg":
+            return path
+        if converter is None:
+            if self._converter is None:
+                from cli_anything.qcad.backends.dwg_converter import DwgConverter
+                self._converter = DwgConverter()
+            converter = self._converter
+        out_dwg = str(Path(path).with_suffix(".dwg"))
+        if not Path(out_dwg).exists():
+            if not converter.dxf_to_dwg(path, out_dwg):
+                return path  # fallback, render may still fail
+        return out_dwg
 
     @staticmethod
     def _pixel_compare(orig_png: str, mod_png: str, output_png: str) -> Dict[str, Any]:
@@ -77,3 +100,42 @@ class QcadRenderer:
             }
         except Exception as e:
             return {"error": str(e)}
+
+
+class QcadVlmVerifier:
+    """Render DWG and ask a yes/no VLM question via Ollama."""
+
+    def __init__(self, qcad_bin: str = None, model: str = None):
+        qcad_dir = None
+        if qcad_bin:
+            qcad_dir = str(Path(qcad_bin).parent)
+        self.renderer = QcadRenderer(qcad_dir=qcad_dir)
+        self.model = model or os.environ.get("VISION_MODEL", "gemma4:31b-cloud")
+        self.base_url = os.environ.get("OLLAMA_URL", "http://192.168.2.15:11434")
+
+    def verify(self, dwg_path: str, question: str) -> dict:
+        png_path = str(Path(dwg_path).with_suffix('')) + '_vlm.png'
+        ok = self.renderer.render(dwg_path, png_path)
+        if not ok:
+            return {"error": "rendering failed", "answer": None}
+        with open(png_path, "rb") as f:
+            b64 = base64.b64encode(f.read()).decode()
+        payload = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": "Answer yes/no questions about CAD drawing screenshots. Only answer YES or NO."},
+                {"role": "user", "content": question, "images": [b64]},
+            ],
+            "stream": False,
+            "options": {"num_predict": 64, "temperature": 0.1},
+        }
+        req = urllib.request.Request(
+            f"{self.base_url}/api/chat",
+            data=json.dumps(payload).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            result = json.loads(resp.read().decode())
+        answer = result.get("message", {}).get("content", "")
+        return {"answer": answer, "model": self.model}
