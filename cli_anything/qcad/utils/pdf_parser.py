@@ -104,21 +104,22 @@ class PdfAnnotationParser:
         """Normalize annotation vertices to page.rect (rotated) space.
 
         When a PDF page has non-zero rotation (e.g. 270°), PyMuPDF may
-        return annotation vertices in mediabox (unrotated) coordinate space.
-        All vertices must be transformed to page.rect (rotated) space so
-        that downstream code (cloud matching, DXF mapping) works correctly.
+        return annotation vertices in either mediabox (unrotated) or
+        page.rect (rotated) coordinate space.  We detect which space the
+        vertices are in by checking whether any Y value exceeds the
+        page.rect height.
 
-        The correct transform is the page's rotation_matrix, applied
-        **unconditionally** when page rotation is non-zero.  The previous
-        heuristic (checking Y > page height and applying only a Y-flip)
-        was wrong: it left vertices that happened to have small Y values
-        untransformed, producing vertical strips where horizontal strips
-        were expected (and vice versa).
+        For vertices in mediabox space, the correct transform to
+        page.rect space is the page's rotation_matrix (NOT a simple
+        Y-flip, which was the previous incorrect approach).
         """
-        if not vertices:
+        if not vertices or page.rotation == 0:
             return vertices
-        if page.rotation == 0:
+        page_h = page.rect.height
+        if max(v[1] for v in vertices) <= page_h:
+            # Already in page.rect space — no transform needed
             return vertices
+        # Vertices are in mediabox space — apply rotation_matrix
         rm = page.rotation_matrix
         return [
             (v[0] * rm.a + v[1] * rm.c + rm.e,
@@ -133,10 +134,12 @@ class PdfAnnotationParser:
     ) -> fitz.Rect:
         """Normalize a PDF rect to page.rect (rotated) space.
 
-        Applies the same rotation_matrix transform as _normalize_vertices,
-        but for annotation rects (e.g. FreeText callouts).
+        Applies the same rotation_matrix transform as _normalize_vertices
+        when the rect extends beyond the page.rect height.
         """
         if page.rotation == 0:
+            return rect
+        if rect.y1 <= page.rect.height:
             return rect
         rm = page.rotation_matrix
         corners = [

@@ -77,7 +77,8 @@ def generate_cloud_overlay(
     for annot in page.annots() or []:
         if annot.type[1] in ('Polygon', 'PolyLine'):
             verts = list(annot.vertices) if hasattr(annot, 'vertices') and annot.vertices else []
-            if has_rotation and verts:
+            # Apply rotation_matrix only if vertices are in mediabox space
+            if has_rotation and verts and max(v[1] for v in verts) > page.rect.height:
                 verts = [
                     (v[0] * rm.a + v[1] * rm.c + rm.e,
                      v[0] * rm.b + v[1] * rm.d + rm.f)
@@ -92,7 +93,7 @@ def generate_cloud_overlay(
             if annot.type[1] == 'FreeText':
                 text = annot.info.get('content', '')
                 r = annot.rect
-                if has_rotation:
+                if has_rotation and r.y1 > page.rect.height:
                     corners = [(r.x0, r.y0), (r.x1, r.y0), (r.x0, r.y1), (r.x1, r.y1)]
                     tc = [
                         (p[0] * rm.a + p[1] * rm.c + rm.e,
