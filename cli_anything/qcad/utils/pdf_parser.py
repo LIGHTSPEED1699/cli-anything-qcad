@@ -90,7 +90,40 @@ def _rects_overlap(rect1: fitz.Rect, rect2: fitz.Rect, tolerance: float = 0) -> 
 
 
 class PdfAnnotationParser:
-    """Extract actionable annotations from a PDF markup file."""
+    """Extract actionable annotations from a PDF markup file.
+
+    Handles PDFs with page rotation by normalizing all annotation vertices
+    to page.rect (rotated) coordinate space before returning them.
+    """
+
+    @staticmethod
+    def _normalize_vertices(
+        vertices: List[Tuple[float, float]],
+        page: fitz.Page,
+    ) -> List[Tuple[float, float]]:
+        """Normalize annotation vertices to page.rect (rotated) space.
+
+        PyMuPDF returns polygon/line vertices in a mixed coordinate space
+        depending on the page rotation.  When page rotation is non-zero,
+        some vertices are in mediabox (unrotated) space (Y > page height)
+        while others are already in page.rect (rotated) space.
+
+        This function detects and corrects the discrepancy.
+        """
+        if not vertices:
+            return vertices
+        page_h = page.rect.height
+        max_y = max(v[1] for v in vertices)
+        if max_y <= page_h:
+            # Already in page.rect space
+            return vertices
+        # Vertices are in mediabox (unrotated) space — apply rotation matrix
+        rot = page.rotation_matrix
+        normalized = []
+        for v in vertices:
+            p = fitz.Point(v) * rot
+            normalized.append((p.x, p.y))
+        return normalized
 
     def parse(self, pdf_path: str) -> List[Dict[str, Any]]:
         annotations: List[Annotation] = []
@@ -115,6 +148,7 @@ class PdfAnnotationParser:
                 text = pg_annot.info.get("content", "").strip()
                 vertices = list(pg_annot.vertices) if hasattr(pg_annot, 'vertices') and pg_annot.vertices else []
                 if vertices:
+                    vertices = self._normalize_vertices(vertices, page)
                     all_clouds.append({
                         "annot_type": "Polygon",
                         "text": text,
@@ -142,7 +176,8 @@ class PdfAnnotationParser:
                     for line_annot in line_annots:
                         if _rects_overlap(rect, line_annot.rect, tolerance=50):
                             if hasattr(line_annot, 'vertices') and line_annot.vertices:
-                                cloud_vertices = list(line_annot.vertices)
+                                cloud_vertices = self._normalize_vertices(
+                                    list(line_annot.vertices), page)
                             break
 
                 target_bbox = [rect.x0, rect.y0, rect.x1, rect.y1]
