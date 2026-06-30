@@ -72,21 +72,38 @@ def generate_cloud_overlay(
     rm = page.rotation_matrix
     has_rotation = page.rotation != 0
 
-    # Collect polygon clouds — raw coordinates, no normalization
+    # Collect polygon clouds — normalize to page.rect space
     polygons: List[List[Tuple[float, float]]] = []
     for annot in page.annots() or []:
         if annot.type[1] in ('Polygon', 'PolyLine'):
             verts = list(annot.vertices) if hasattr(annot, 'vertices') and annot.vertices else []
+            if has_rotation and verts:
+                verts = [
+                    (v[0] * rm.a + v[1] * rm.c + rm.e,
+                     v[0] * rm.b + v[1] * rm.d + rm.f)
+                    for v in verts
+                ]
             polygons.append(verts)
 
-    # Collect FreeText callouts — raw coordinates
+    # Collect FreeText callouts — normalize to page.rect space
     freetexts: List[Dict[str, Any]] = []
     if show_freetexts:
         for annot in page.annots() or []:
             if annot.type[1] == 'FreeText':
                 text = annot.info.get('content', '')
                 r = annot.rect
-                tc = [(r.x0, r.y0), (r.x1, r.y0), (r.x0, r.y1), (r.x1, r.y1)]
+                if has_rotation:
+                    corners = [(r.x0, r.y0), (r.x1, r.y0), (r.x0, r.y1), (r.x1, r.y1)]
+                    tc = [
+                        (p[0] * rm.a + p[1] * rm.c + rm.e,
+                         p[0] * rm.b + p[1] * rm.d + rm.f)
+                        for p in corners
+                    ]
+                    xs = [p[0] for p in tc]
+                    ys = [p[1] for p in tc]
+                    tc = [(min(xs), min(ys)), (max(xs), max(ys))]
+                else:
+                    tc = [(r.x0, r.y0), (r.x1, r.y1)]
                 freetexts.append({'text': text, 'corners': tc})
 
     doc.close()

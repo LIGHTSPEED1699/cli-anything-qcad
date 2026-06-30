@@ -101,28 +101,45 @@ class PdfAnnotationParser:
         vertices: List[Tuple[float, float]],
         page: fitz.Page,
     ) -> List[Tuple[float, float]]:
-        """Return annotation vertices as-is.
+        """Transform annotation vertices to page.rect (rotated) space.
 
-        PyMuPDF returns annotation vertices in a mix of page.rect and
-        mediabox coordinate space on rotated pages.  The affine
-        calibration in the planner (_calibrate_affine) is trained on
-        text spans from get_text("dict") which are in the same mixed
-        space, so it handles the mapping correctly without any
-        pre-normalization of vertices.
-
-        Previous attempts to normalize vertices (Y-flip or
-        rotation_matrix) broke the correspondence between cloud
-        vertices and the affine model, producing wrong DXF mappings.
+        On rotated pages, PyMuPDF returns annotation vertices in mediabox
+        (unrotated) coordinate space.  We apply the page's rotation_matrix
+        to transform them to page.rect (rotated) space, matching the
+        normalized text spans used for affine calibration.
         """
-        return vertices
+        if not vertices or page.rotation == 0:
+            return vertices
+        rm = page.rotation_matrix
+        return [
+            (v[0] * rm.a + v[1] * rm.c + rm.e,
+             v[0] * rm.b + v[1] * rm.d + rm.f)
+            for v in vertices
+        ]
 
     @staticmethod
     def _normalize_rect(
         rect: fitz.Rect,
         page: fitz.Page,
     ) -> fitz.Rect:
-        """Return annotation rect as-is (see _normalize_vertices docs)."""
-        return rect
+        """Transform annotation rect to page.rect (rotated) space."""
+        if page.rotation == 0:
+            return rect
+        rm = page.rotation_matrix
+        corners = [
+            (rect.x0, rect.y0),
+            (rect.x1, rect.y0),
+            (rect.x0, rect.y1),
+            (rect.x1, rect.y1),
+        ]
+        transformed = [
+            (p[0] * rm.a + p[1] * rm.c + rm.e,
+             p[0] * rm.b + p[1] * rm.d + rm.f)
+            for p in corners
+        ]
+        xs = [p[0] for p in transformed]
+        ys = [p[1] for p in transformed]
+        return fitz.Rect(min(xs), min(ys), max(xs), max(ys))
 
     def parse(self, pdf_path: str) -> List[Dict[str, Any]]:
         annotations: List[Annotation] = []
