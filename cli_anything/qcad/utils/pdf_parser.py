@@ -108,6 +108,10 @@ class PdfAnnotationParser:
         some vertices are in mediabox (unrotated) space (Y > page height)
         while others are already in page.rect (rotated) space.
 
+        For rotation 270, the correct mediabox→page.rect transform is a
+        simple Y-flip around the mediabox height (NOT the rotation_matrix,
+        which swaps X and Y and produces wrong results for these vertices).
+
         This function detects and corrects the discrepancy.
         """
         if not vertices:
@@ -117,13 +121,25 @@ class PdfAnnotationParser:
         if max_y <= page_h:
             # Already in page.rect space
             return vertices
-        # Vertices are in mediabox (unrotated) space — apply rotation matrix
-        rot = page.rotation_matrix
-        normalized = []
-        for v in vertices:
-            p = fitz.Point(v) * rot
-            normalized.append((p.x, p.y))
+        # Vertices are in mediabox (unrotated) space.
+        # For rotation 270, flip Y around the mediabox height.
+        mediabox_h = page.mediabox.y1
+        normalized = [(v[0], mediabox_h - v[1]) for v in vertices]
         return normalized
+
+    @staticmethod
+    def _normalize_rect(
+        rect: fitz.Rect,
+        page: fitz.Page,
+    ) -> fitz.Rect:
+        """Normalize a PDF rect to page.rect (rotated) space.
+
+        Like _normalize_vertices, but for annotation rects (e.g. FreeText).
+        """
+        if rect.y1 <= page.rect.height:
+            return rect
+        mediabox_h = page.mediabox.y1
+        return fitz.Rect(rect.x0, mediabox_h - rect.y1, rect.x1, mediabox_h - rect.y0)
 
     def parse(self, pdf_path: str) -> List[Dict[str, Any]]:
         annotations: List[Annotation] = []
@@ -149,11 +165,12 @@ class PdfAnnotationParser:
                 vertices = list(pg_annot.vertices) if hasattr(pg_annot, 'vertices') and pg_annot.vertices else []
                 if vertices:
                     vertices = self._normalize_vertices(vertices, page)
+                    cloud_rect = self._normalize_rect(pg_annot.rect, page)
                     all_clouds.append({
                         "annot_type": "Polygon",
                         "text": text,
                         "vertices": vertices,
-                        "rect": [pg_annot.rect.x0, pg_annot.rect.y0, pg_annot.rect.x1, pg_annot.rect.y1],
+                        "rect": [cloud_rect.x0, cloud_rect.y0, cloud_rect.x1, cloud_rect.y1],
                         "page": page_num,
                     })
 
@@ -161,7 +178,7 @@ class PdfAnnotationParser:
                 text = ft_annot.info.get("content", "").strip()
                 if not _is_actionable(text):
                     continue
-                rect = ft_annot.rect
+                rect = self._normalize_rect(ft_annot.rect, page)
                 author = ft_annot.info.get("title", "")
 
                 # Try to find an overlapping/nearby polygon cloud for this FreeText
@@ -174,7 +191,8 @@ class PdfAnnotationParser:
                 # Fallback to line arrow if no cloud polygon found
                 if cloud_vertices is None:
                     for line_annot in line_annots:
-                        if _rects_overlap(rect, line_annot.rect, tolerance=50):
+                        line_rect = self._normalize_rect(line_annot.rect, page)
+                        if _rects_overlap(rect, line_rect, tolerance=50):
                             if hasattr(line_annot, 'vertices') and line_annot.vertices:
                                 cloud_vertices = self._normalize_vertices(
                                     list(line_annot.vertices), page)
@@ -205,7 +223,8 @@ class PdfAnnotationParser:
                     claimed = False
                     cloud_rect = fitz.Rect(*cloud["rect"])
                     for ft_annot in freetext_annots:
-                        if _rects_overlap(ft_annot.rect, cloud_rect, tolerance=80):
+                        ft_rect = self._normalize_rect(ft_annot.rect, page)
+                        if _rects_overlap(ft_rect, cloud_rect, tolerance=80):
                             claimed = True
                             break
                     if claimed:
