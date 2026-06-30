@@ -101,61 +101,28 @@ class PdfAnnotationParser:
         vertices: List[Tuple[float, float]],
         page: fitz.Page,
     ) -> List[Tuple[float, float]]:
-        """Normalize annotation vertices to page.rect (rotated) space.
+        """Return annotation vertices as-is.
 
-        When a PDF page has non-zero rotation (e.g. 270°), PyMuPDF may
-        return annotation vertices in either mediabox (unrotated) or
-        page.rect (rotated) coordinate space.  We detect which space the
-        vertices are in by checking whether any Y value exceeds the
-        page.rect height.
+        PyMuPDF returns annotation vertices in a mix of page.rect and
+        mediabox coordinate space on rotated pages.  The affine
+        calibration in the planner (_calibrate_affine) is trained on
+        text spans from get_text("dict") which are in the same mixed
+        space, so it handles the mapping correctly without any
+        pre-normalization of vertices.
 
-        For vertices in mediabox space, the correct transform to
-        page.rect space is the page's rotation_matrix (NOT a simple
-        Y-flip, which was the previous incorrect approach).
+        Previous attempts to normalize vertices (Y-flip or
+        rotation_matrix) broke the correspondence between cloud
+        vertices and the affine model, producing wrong DXF mappings.
         """
-        if not vertices or page.rotation == 0:
-            return vertices
-        page_h = page.rect.height
-        if max(v[1] for v in vertices) <= page_h:
-            # Already in page.rect space — no transform needed
-            return vertices
-        # Vertices are in mediabox space — apply rotation_matrix
-        rm = page.rotation_matrix
-        return [
-            (v[0] * rm.a + v[1] * rm.c + rm.e,
-             v[0] * rm.b + v[1] * rm.d + rm.f)
-            for v in vertices
-        ]
+        return vertices
 
     @staticmethod
     def _normalize_rect(
         rect: fitz.Rect,
         page: fitz.Page,
     ) -> fitz.Rect:
-        """Normalize a PDF rect to page.rect (rotated) space.
-
-        Applies the same rotation_matrix transform as _normalize_vertices
-        when the rect extends beyond the page.rect height.
-        """
-        if page.rotation == 0:
-            return rect
-        if rect.y1 <= page.rect.height:
-            return rect
-        rm = page.rotation_matrix
-        corners = [
-            (rect.x0, rect.y0),
-            (rect.x1, rect.y0),
-            (rect.x0, rect.y1),
-            (rect.x1, rect.y1),
-        ]
-        transformed = [
-            (p[0] * rm.a + p[1] * rm.c + rm.e,
-             p[0] * rm.b + p[1] * rm.d + rm.f)
-            for p in corners
-        ]
-        xs = [p[0] for p in transformed]
-        ys = [p[1] for p in transformed]
-        return fitz.Rect(min(xs), min(ys), max(xs), max(ys))
+        """Return annotation rect as-is (see _normalize_vertices docs)."""
+        return rect
 
     def parse(self, pdf_path: str) -> List[Dict[str, Any]]:
         annotations: List[Annotation] = []

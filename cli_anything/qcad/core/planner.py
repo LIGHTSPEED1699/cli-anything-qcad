@@ -104,7 +104,16 @@ def _vlm_parse_annotation(text: str, context: str = "",
 
 
 def _extract_pdf_text_spans(pdf_path: str) -> Dict[str, List[Tuple[float, float, float, float]]]:
-    """Extract text spans from PDF with their bounding boxes."""
+    """Extract text spans from PDF with their bounding boxes.
+
+    Returns raw coordinates from get_text("dict") without normalization.
+    On rotated pages, PyMuPDF returns a mix of page.rect and mediabox
+    coordinate spaces.  The affine calibration (_calibrate_affine) is
+    trained on these raw mixed-space coordinates, and cloud polygon
+    vertices are also left in raw mixed space, so both sides of the
+    calibration use the same coordinate system and the affine handles
+    the mapping correctly.
+    """
     doc = fitz.open(pdf_path)
     spans: Dict[str, List[Tuple[float, float, float, float]]] = {}
     for page in doc:
