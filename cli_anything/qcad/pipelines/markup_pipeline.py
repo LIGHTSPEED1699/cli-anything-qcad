@@ -23,6 +23,7 @@ from cli_anything.qcad.engines.clone_terminal_wires import CloneTerminalWiresEng
 from cli_anything.qcad.engines.extra_ops import ResizeBoundingBoxEngine, MarkSpareWiresEngine
 from cli_anything.qcad.engines.geometry_ops import AddDimensionEngine, AddLeaderEngine, MoveEntityEngine
 from cli_anything.qcad.utils.visual_verify import QcadRenderer
+from cli_anything.qcad.utils.cloud_overlay import generate_cloud_overlay
 
 
 class MarkupPipeline:
@@ -85,6 +86,14 @@ class MarkupPipeline:
         tasks = self.planner.plan(str(pdf_work), str(original_dxf))
         if not tasks:
             return {"success": False, "error": "No tasks generated from PDF annotations"}
+
+        # Generate cloud detection overlay for diagnostics
+        overlay_png = str(output_dir / "cloud_detection_overlay.png")
+        try:
+            generate_cloud_overlay(str(pdf_work), overlay_png)
+        except Exception as exc:
+            # Non-fatal: overlay is diagnostic, pipeline should continue
+            overlay_png = None
 
         # Sort tasks: deletions first, then changes/adds, then mark spare last
         order = {
@@ -151,6 +160,7 @@ class MarkupPipeline:
             "tasks": [t.to_dict() for t in tasks],
             "task_reports": task_reports,
             "comparison": comparison,
+            "cloud_detection_overlay": overlay_png,
             "vlm_report": vlm_report,
         }
         (output_dir / "pipeline_report.json").write_text(
