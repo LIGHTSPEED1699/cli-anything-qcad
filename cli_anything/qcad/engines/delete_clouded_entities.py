@@ -224,6 +224,32 @@ def _entity_inside_polygon(ent, polygon: List[Tuple[float, float]],
                 return True
         return _point_in_polygon((cx, cy), polygon)
 
+    if etype == "HATCH":
+        # HATCH entities use EdgePath or PolylinePath boundary paths.
+        # Extract points from edges and check if any are inside the polygon.
+        try:
+            for path in ent.paths:
+                # PolylinePath has .vertices
+                if hasattr(path, "vertices"):
+                    for v in path.vertices:
+                        if _point_in_polygon((v[0], v[1]), polygon):
+                            return True
+                # EdgePath has .edges
+                elif hasattr(path, "edges"):
+                    for edge in path.edges:
+                        if hasattr(edge, "start") and _point_in_polygon(
+                            (edge.start[0], edge.start[1]), polygon):
+                            return True
+                        if hasattr(edge, "end") and _point_in_polygon(
+                            (edge.end[0], edge.end[1]), polygon):
+                            return True
+                        if hasattr(edge, "center") and _point_in_polygon(
+                            (edge.center[0], edge.center[1]), polygon):
+                            return True
+        except Exception:
+            pass
+        return False
+
     # --- Point-like entities: point-in-polygon ---
     pts = _entity_geometry_points(ent)
     if not pts:
