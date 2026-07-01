@@ -101,6 +101,10 @@ class DxfEntityIndex:
                             source_block=ent.block_name,
                         )
                         self.entities.append(shifted)
+                # Also add ATTRIB entities attached to modelspace INSERTs
+                if hasattr(ent, '_attribs'):
+                    for attrib_ent in ent._attribs:
+                        self.entities.append(attrib_ent)
 
         self._build_index()
         self._loaded = True
@@ -143,7 +147,7 @@ class DxfEntityIndex:
             )
 
         elif etype == 'INSERT':
-            return DxfEntity(
+            ent = DxfEntity(
                 handle=entity.dxf.handle,
                 entity_type='INSERT',
                 text=f"[BLOCK: {entity.dxf.name}]",
@@ -151,6 +155,31 @@ class DxfEntityIndex:
                 layer=entity.dxf.layer,
                 block_name=entity.dxf.name,
             )
+            # Also index ATTRIB entities attached to this INSERT.
+            # ATTRIBs contain user-visible text (e.g. title block values)
+            # with insertion points in model-space coordinates.
+            attribs = []
+            try:
+                for attrib in entity.attribs:
+                    txt = (attrib.dxf.text or "").strip()
+                    if txt and len(txt) >= 3:
+                        attribs.append(DxfEntity(
+                            handle=f"{entity.dxf.handle}#{attrib.dxf.handle}",
+                            entity_type='ATTRIB',
+                            text=txt,
+                            insertion_point=(attrib.dxf.insert[0], attrib.dxf.insert[1]),
+                            layer=entity.dxf.layer,
+                            text_height=getattr(attrib.dxf, 'height', None),
+                            rotation=getattr(attrib.dxf, 'rotation', None),
+                            block_name=entity.dxf.name,
+                            source_block=entity.dxf.name,
+                        ))
+            except Exception:
+                pass
+            if block_name is None and attribs:
+                # In modelspace: return INSERT, and caller will also add attribs
+                ent._attribs = attribs
+            return ent
 
         elif etype == 'DIMENSION':
             # Dimensions have text stored in dxf.text
@@ -239,8 +268,8 @@ class DxfEntityIndex:
         return results
 
     def get_all_text_entities(self) -> List[DxfEntity]:
-        """Return all TEXT and MTEXT entities."""
-        return [e for e in self.entities if e.entity_type in ('TEXT', 'MTEXT')]
+        """Return all TEXT, MTEXT, and ATTRIB entities."""
+        return [e for e in self.entities if e.entity_type in ('TEXT', 'MTEXT', 'ATTRIB')]
 
     def get_all_blocks(self) -> List[DxfEntity]:
         """Return all INSERT (block reference) entities."""
