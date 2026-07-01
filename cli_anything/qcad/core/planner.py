@@ -375,6 +375,13 @@ def _merge_tasks(tasks: List[Task]) -> List[Task]:
     """Merge duplicate tasks of the same type on the same region.
     Do NOT merge different task types (e.g. delete + mark spare) even if they
     share a region; they are distinct operations.
+
+    Two tasks are merged only if ALL of:
+    - Same task_type
+    - Overlapping bboxes (tight, tolerance=0.05 to catch float jitter only)
+    - Same source polygon (or both have no source polygon)
+    This prevents merging tasks from adjacent but distinct cloud regions
+    that happen to have marginally overlapping bboxes.
     """
     merged: List[Task] = []
     for t in tasks:
@@ -384,8 +391,24 @@ def _merge_tasks(tasks: List[Task]) -> List[Task]:
             if t.task_type != m.task_type:
                 continue
             mbbox = m.dxf_region.get("bbox") if m.dxf_region else None
-            if _bbox_overlap(bbox, mbbox):
-                # Same type + overlapping region: merge parameters and constraints
+            if _bbox_overlap(bbox, mbbox, tolerance=0.05):
+                # Check they come from the same source polygon
+                t_source = t.source_annotation or {}
+                m_source = m.source_annotation or {}
+                t_verts = t_source.get("arrow_vertices") or t_source.get("cloud_vertices")
+                m_verts = m_source.get("arrow_vertices") or m_source.get("cloud_vertices")
+                if t_verts and m_verts:
+                    # Compare vertex lists — only merge if from same polygon
+                    if len(t_verts) != len(m_verts):
+                        continue
+                    same = all(
+                        abs(t_verts[i][0] - m_verts[i][0]) < 1.0 and
+                        abs(t_verts[i][1] - m_verts[i][1]) < 1.0
+                        for i in range(len(t_verts))
+                    )
+                    if not same:
+                        continue
+                # Same type + overlapping region + same source: merge
                 m.parameters.update(t.parameters)
                 for c in t.constraints:
                     if c not in m.constraints:

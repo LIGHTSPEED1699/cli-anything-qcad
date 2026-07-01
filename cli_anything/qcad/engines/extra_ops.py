@@ -98,29 +98,24 @@ class ResizeBoundingBoxEngine:
 
 
 class MarkSpareWiresEngine:
-    """Mark clouded wire runs as spare by drawing a dashed HIDDEN rectangle
-    around each clouded region. This mirrors the accepted reference style
-    for Pair 1."""
+    """Mark clouded wire runs as spare.
+
+    The PDF markup instruction 'mark spare on both ends' means the wires
+    in the clouded region should be labeled or annotated as spare at both
+    ends of the circuit.  The exact representation depends on drawing
+    conventions (e.g. adding 'SPARE' text labels, changing line type,
+    or crossing out terminal numbers).
+
+    The previous implementation drew dashed HIDDEN rectangles around the
+    clouded region, which created unwanted geometry not requested in the
+    markup.  This engine is now a pass-through until a proper spare-marking
+    routine is implemented.
+    """
 
     def run(self, dxf_path: str, parameters: Dict[str, Any],
             out_dxf: str) -> Dict[str, Any]:
-        regions = _normalize_regions(parameters)
         doc = ezdxf.readfile(dxf_path)
-        msp = doc.modelspace()
-        added = 0
-        for region in regions:
-            verts = region.get("verts", [])
-            if len(verts) < 3:
-                continue
-            xs = [v[0] for v in verts]
-            ys = [v[1] for v in verts]
-            minx, maxx = min(xs), max(xs)
-            miny, maxy = min(ys), max(ys)
-            rect = [(minx, miny), (maxx, miny), (maxx, maxy), (minx, maxy), (minx, miny)]
-            msp.add_lwpolyline(rect, close=True, dxfattribs={
-                "linetype": "HIDDEN",
-                "layer": "0",
-            })
-            added += 1
         doc.saveas(out_dxf)
-        return {"engine": "mark_spare_wires", "added_rectangles": added, "output_dxf": out_dxf}
+        return {"engine": "mark_spare_wires", "added_rectangles": 0,
+                "note": "pass-through; spare marking not yet implemented",
+                "output_dxf": out_dxf}
