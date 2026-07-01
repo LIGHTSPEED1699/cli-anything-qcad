@@ -378,7 +378,7 @@ def generate_dwg_cloud_overlay(
     # Draw FreeText callout arrows (text box → arrow tip line)
     for i, ft in enumerate(freetexts):
         verts_pr = ft['verts']
-        text = ft['text'][:40]  # truncate long text
+        text = ft['text'][:120]  # allow long annotation text
         verts_dxf = [pr_to_dxf(x, y) for x, y in verts_pr]
         px_verts = [(int(dxf_to_pixel(x, y)[0]), int(dxf_to_pixel(x, y)[1]))
                      for x, y in verts_dxf]
@@ -395,14 +395,22 @@ def generate_dwg_cloud_overlay(
             box = px_verts[0]
             draw.rectangle([box[0] - 6, box[1] - 6, box[0] + 6, box[1] + 6],
                            outline=color, width=2)
-        # Label with annotation text
-        label = f"F{i}: {text}"
+        # Label with full annotation text, placed near the text box marker
+        # with a semi-transparent background for readability
         if px_verts:
-            lx, ly = px_verts[0][0] + 10, px_verts[0][1] - 10
-            bbox = draw.textbbox((lx, ly), label, font=font)
-            draw.rectangle([bbox[0] - 2, bbox[1] - 2, bbox[2] + 2, bbox[3] + 2],
-                           fill=(0, 0, 0, 200))
-            draw.text((lx, ly), label, fill=color, font=font)
+            # Place label below the text box marker, wrapping if too long
+            lx = px_verts[0][0] + 10
+            ly = px_verts[0][1] + 10
+            # Wrap text at ~60 chars per line
+            lines = []
+            for start in range(0, len(text), 60):
+                lines.append(text[start:start + 60])
+            for line_text in lines:
+                bbox = draw.textbbox((lx, ly), line_text, font=font)
+                draw.rectangle([bbox[0] - 2, bbox[1] - 2, bbox[2] + 2, bbox[3] + 2],
+                               fill=(0, 0, 0, 220))
+                draw.text((lx, ly), line_text, fill=color, font=font)
+                ly += bbox[3] - bbox[1] + 2
 
     # Mark known DXF text label positions
     if show_labels:
