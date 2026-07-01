@@ -89,11 +89,68 @@ class ChangeTextValueEngine:
         new_value = parameters.get("new_value", "")
         near = parameters.get("near_point")
         regex = parameters.get("regex", False)
+
+        doc = ezdxf.readfile(dxf_path)
+
+        # If no explicit target text but we have a near_point, find the
+        # nearest TEXT/MTEXT entity and change it.  This handles instructions
+        # like "Change to TB-21" where the original text isn't specified but
+        # the annotation's location tells us which text to change.
+        if (not target or "entity" in (target or "").lower()
+                or "bounding box" in (target or "").lower()) and near:
+            msp = doc.modelspace()
+            best_ent = None
+            best_dist = float("inf")
+            for ent in msp:
+                etype = ent.dxftype()
+                if etype not in ("TEXT", "MTEXT", "ATTRIB"):
+                    continue
+                try:
+                    if etype == "TEXT" or etype == "ATTRIB":
+                        pt = (ent.dxf.insert.x, ent.dxf.insert.y)
+                    else:
+                        pt = (ent.dxf.insert.x, ent.dxf.insert.y)
+                except Exception:
+                    continue
+                d = (pt[0] - near[0]) ** 2 + (pt[1] - near[1]) ** 2
+                if d < best_dist:
+                    best_dist = d
+                    best_ent = ent
+            if best_ent and best_dist < 100:  # reasonable proximity
+                etype = best_ent.dxftype()
+                try:
+                    if etype == "TEXT" or etype == "ATTRIB":
+                        old_text = best_ent.dxf.text
+                        best_ent.dxf.text = new_value
+                    elif etype == "MTEXT":
+                        old_text = best_ent.text
+                        best_ent.text = new_value
+                    doc.saveas(out_dxf)
+                    return {
+                        "engine": "change_text_value",
+                        "target": f"nearest to {near}",
+                        "old_value": old_text,
+                        "new_value": new_value,
+                        "matches_found": 1,
+                        "changed": 1,
+                        "output_dxf": out_dxf,
+                    }
+                except Exception:
+                    pass
+
         if not target or new_value is None:
             return {"engine": "change_text_value", "success": False, "error": "missing target or new_value"}
 
+        # When target_text is a real search pattern (not a vague description
+        # like "entity" or "bounding box"), search ALL text without filtering
+        # by near_point.  The near_point filter is only useful when the target
+        # is vague and we need to rely on the annotation's location.
+        vague_target = ("entity" in target.lower() or "bounding box" in target.lower()
+                        or "text" == target.lower().strip())
+        search_near = near if vague_target else None
+
         doc = ezdxf.readfile(dxf_path)
-        matches = _find_text_entities(doc, target, near_point=near, regex=regex)
+        matches = _find_text_entities(doc, target, near_point=search_near, regex=regex)
         changed = 0
         for ent in matches:
             etype = ent.dxftype()

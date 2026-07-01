@@ -235,6 +235,14 @@ def _extract_change_value(text: str) -> Tuple[Optional[str], Optional[str]]:
     m = re.search(r"change\s+(.+?)\s+(?:to|->|→)\s+(.+)", lowered)
     if m:
         return m.group(1).strip().upper(), m.group(2).strip().upper()
+    # "Change to Y" (no explicit target — derive search prefix from Y)
+    m = re.search(r"change\s+to\s+(.+)", lowered)
+    if m:
+        new_val = m.group(1).strip().upper()
+        # Derive a search prefix (e.g. "TB-" from "TB-21", "F" from "F175")
+        prefix_match = re.match(r"([A-Z]+[- ]?)", new_val)
+        target = prefix_match.group(1).strip() if prefix_match else None
+        return target, new_val
     # "Replace X with Y"
     m = re.search(r"replace\s+(.+?)\s+with\s+(.+)", lowered)
     if m:

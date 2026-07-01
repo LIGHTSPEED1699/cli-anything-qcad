@@ -26,13 +26,15 @@ except ImportError as e:  # pragma: no cover
 
 
 # Terminal/ground/title patterns to preserve by text or block name.
+# Only include generic title-block and ground patterns, not pair-specific
+# labels like F175 or TB24.
 _PROTECTED_TEXT_PATTERNS = {
-    "TB-", "TB21", "TB24", "TB19", "TB20", "TERMINAL", "Wlltermn",
-    "GND", "GRND", "GROUND", "F174", "F173", "F175",
     "TITLE", "SHEET", "DRAWING", "REV ", "DATE", "BY ", "APPROVED",
-    "DESCRIPTION", "CHKD", "EPAC",
+    "DESCRIPTION", "CHKD", "EPAC", "PLAINS MIDSTREAM",
 }
-_PROTECTED_BLOCK_NAMES = {"Wlltermn", "TERM", "TERMBLOCK", "GROUND", "GND"}
+# Use exact block name matching (not substring) to avoid false positives
+# like "WLTERM1" matching "TERM".
+_PROTECTED_BLOCK_NAMES = {"Wlltermn", "GROUND", "GND"}
 _PROTECTED_LAYERS = {"TITLEBLOCK", "BORDER", "DEFPOINTS"}
 
 
@@ -109,7 +111,7 @@ def _entity_is_protected(ent) -> bool:
         text = (ent.text or "").upper()
     elif etype == "INSERT":
         block = (ent.dxf.name or "").upper()
-        if any(p.upper() in block for p in _PROTECTED_BLOCK_NAMES):
+        if any(p.upper() == block for p in _PROTECTED_BLOCK_NAMES):
             return True
     elif etype == "ATTRIB":
         text = (ent.dxf.text or "").upper()
@@ -181,15 +183,32 @@ def _entity_inside_polygon(ent, polygon: List[Tuple[float, float]],
         pts = [(p[0], p[1]) for p in ent.get_points("xy")]
         if not pts:
             return False
+        # Compute centroid (of unique points, excluding closing duplicate)
+        raw_pts = pts[:-1] if ent.closed and pts[0] == pts[-1] else pts
+        if not raw_pts:
+            raw_pts = pts
+        cx = sum(p[0] for p in raw_pts) / len(raw_pts)
+        cy = sum(p[1] for p in raw_pts) / len(raw_pts)
+        centroid_inside = _point_in_polygon((cx, cy), polygon)
+
         if ent.closed:
-            pts.append(pts[0])
+            # For closed polylines (boxes, rectangles, borders): require the
+            # centroid to be inside the cloud.  This prevents large containers
+            # like the RELAY 15 box that merely cross through a cloud from
+            # being deleted — only entities whose center is inside the cloud
+            # are considered "inside".
+            if centroid_inside:
+                return True
+            # If centroid is outside, don't delete even if segments cross.
+            return False
+
+        # Open polylines (wires): use segment intersection to catch wires
+        # crossing through the cloud.
+        pts.append(pts[0]) if False else None  # keep open
         for i in range(len(pts) - 1):
             if _segment_intersects_polygon(pts[i], pts[i + 1], polygon):
                 return True
-        # Also check centroid
-        cx = sum(p[0] for p in pts) / len(pts)
-        cy = sum(p[1] for p in pts) / len(pts)
-        return _point_in_polygon((cx, cy), polygon)
+        return centroid_inside
 
     if etype == "ARC":
         cx, cy = ent.dxf.center.x, ent.dxf.center.y
