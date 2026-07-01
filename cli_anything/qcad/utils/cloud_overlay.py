@@ -307,10 +307,18 @@ def generate_dwg_cloud_overlay(
     has_rotation = page.rotation != 0
 
     clouds = []
+    freetexts = []  # FreeText callout annotations with arrow vertices
     for annot in page.annots() or []:
-        if annot.type[1] in ('Polygon', 'PolyLine'):
+        atype = annot.type[1]
+        if atype in ('Polygon', 'PolyLine'):
             verts = list(annot.vertices) if hasattr(annot, 'vertices') and annot.vertices else []
             clouds.append(_normalize_verts(verts, page, rm, has_rotation))
+        elif atype == 'FreeText':
+            text = annot.info.get('content', '')
+            verts = list(annot.vertices) if hasattr(annot, 'vertices') and annot.vertices else []
+            if verts:
+                ft_verts = _normalize_verts(verts, page, rm, has_rotation)
+                freetexts.append({'text': text, 'verts': ft_verts})
     doc_pdf.close()
 
     # 6. Map page.rect → DXF (affine or border calibration)
@@ -328,7 +336,8 @@ def generate_dwg_cloud_overlay(
         def pr_to_dxf(x, y):
             return _map_pdf_point_to_dxf((x, y), affine)
     else:
-        # Border calibration fallback
+        # Border calibration fallback (same logic as planner._border_calibration)
+        from cli_anything.qcad.utils.cloud_overlay import _pdf_content_bbox, _compute_dxf_extents as _ext
         pdf_left_b, pdf_top_b, pdf_right_b, pdf_bottom_b = _pdf_content_bbox(pdf_path)
         pdf_content_w = pdf_right_b - pdf_left_b
         pdf_content_h = pdf_bottom_b - pdf_top_b
@@ -365,6 +374,35 @@ def generate_dwg_cloud_overlay(
         draw.rectangle([bbox[0] - 2, bbox[1] - 2, bbox[2] + 2, bbox[3] + 2],
                        fill=(0, 0, 0, 200))
         draw.text((cx, cy), label, fill=color, font=font)
+
+    # Draw FreeText callout arrows (text box → arrow tip line)
+    for i, ft in enumerate(freetexts):
+        verts_pr = ft['verts']
+        text = ft['text'][:40]  # truncate long text
+        verts_dxf = [pr_to_dxf(x, y) for x, y in verts_pr]
+        px_verts = [(int(dxf_to_pixel(x, y)[0]), int(dxf_to_pixel(x, y)[1]))
+                     for x, y in verts_dxf]
+        color = FREETEXT_COLOR
+        # Draw the callout line from text box to arrow tip
+        if len(px_verts) >= 2:
+            draw.line(px_verts, fill=color, width=3)
+        # Draw arrow tip marker (last vertex) as a filled circle
+        if px_verts:
+            tip = px_verts[-1]
+            draw.ellipse([tip[0] - 8, tip[1] - 8, tip[0] + 8, tip[1] + 8],
+                         fill=color[:3] + (200,))
+            # Draw text box marker (first vertex) as a hollow rectangle
+            box = px_verts[0]
+            draw.rectangle([box[0] - 6, box[1] - 6, box[0] + 6, box[1] + 6],
+                           outline=color, width=2)
+        # Label with annotation text
+        label = f"F{i}: {text}"
+        if px_verts:
+            lx, ly = px_verts[0][0] + 10, px_verts[0][1] - 10
+            bbox = draw.textbbox((lx, ly), label, font=font)
+            draw.rectangle([bbox[0] - 2, bbox[1] - 2, bbox[2] + 2, bbox[3] + 2],
+                           fill=(0, 0, 0, 200))
+            draw.text((lx, ly), label, fill=color, font=font)
 
     # Mark known DXF text label positions
     if show_labels:

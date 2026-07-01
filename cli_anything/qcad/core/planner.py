@@ -157,8 +157,17 @@ def _extract_pdf_text_spans(pdf_path: str) -> Dict[str, List[Tuple[float, float,
 
 def _calibrate_affine(pdf_spans: Dict[str, List[Tuple[float, float, float, float]]],
                       dxf_index: DxfEntityIndex,
-                      min_matches: int = 6) -> Optional[Any]:
-    """Compute affine transform from PDF display coords to DXF coords using text label correspondences."""
+                      min_matches: int = 6,
+                      max_median_residual: float = 0.5) -> Optional[Any]:
+    """Compute affine transform from PDF display coords to DXF coords using text label correspondences.
+
+    Returns None if:
+    - Fewer than *min_matches* unique text matches exist, OR
+    - The median fitting residual exceeds *max_median_residual* DXF units,
+      indicating the affine transform is unreliable (e.g. all matches are
+      in one corner of a large drawing).  Callers should fall back to
+      border calibration in this case.
+    """
     import numpy as np
     pairs_pdf = []
     pairs_dxf = []
@@ -196,6 +205,74 @@ def _calibrate_affine(pdf_spans: Dict[str, List[Tuple[float, float, float, float
             return None
 
     M, *_ = np.linalg.lstsq(A, B, rcond=None)
+
+    # Quality check: reject affine if (a) median residual is too high, OR
+    # (b) calibration points cover too little of the page in either axis.
+    # Sparse coverage means the affine is only valid within the calibration
+    # range and extrapolates poorly to the rest of the drawing.
+    final_residuals = np.hypot(
+        A[:, 0] * M[0, 0] + A[:, 1] * M[1, 0] + M[2, 0] - B[:, 0],
+        A[:, 0] * M[0, 1] + A[:, 1] * M[1, 1] + M[2, 1] - B[:, 1],
+    )
+    median_residual = float(np.median(final_residuals))
+    if median_residual > max_median_residual:
+        return None
+
+    # Spatial coverage check: if the DXF drawing is large and calibration
+    # points cover too little of the page, the affine extrapolates unreliably.
+    # For small drawings (both dims < 15 DXF units), even narrow coverage
+    # can produce a usable affine because extrapolation distances are small.
+    # For large drawings, require at least 25% X and 15% Y page coverage.
+    # We compare calibration PDF range to page size, AND calibration DXF
+    # range to full DXF extents (computed from all entities).
+    if len(A) >= 3:
+        import ezdxf as _ezdxf
+        page_w = 1224.0
+        page_h = 792.0
+        pdf_x_range = float(A[:, 0].max() - A[:, 0].min())
+        pdf_y_range = float(A[:, 1].max() - A[:, 1].min())
+        dxf_match_x = float(B[:, 0].max() - B[:, 0].min())
+        dxf_match_y = float(B[:, 1].max() - B[:, 1].min())
+
+        # Compute full DXF extents
+        try:
+            _doc = _ezdxf.readfile(dxf_index.dxf_path)
+            _msp = _doc.modelspace()
+            _dxmin_x = _dxmin_y = float('inf')
+            _dxmax_x = _dxmax_y = float('-inf')
+            for _e in _msp:
+                try:
+                    if _e.dxftype() in ('TEXT', 'MTEXT', 'INSERT'):
+                        _x, _y = _e.dxf.insert.x, _e.dxf.insert.y
+                    elif _e.dxftype() == 'LINE':
+                        _x, _y = _e.dxf.start.x, _e.dxf.start.y
+                    elif _e.dxftype() == 'LWPOLYLINE':
+                        _pts = list(_e.get_points("xy"))
+                        _x, _y = _pts[0] if _pts else (0, 0)
+                    elif _e.dxftype() in ('CIRCLE', 'ARC'):
+                        _x, _y = _e.dxf.center.x, _e.dxf.center.y
+                    else:
+                        continue
+                    _dxmin_x = min(_dxmin_x, _x)
+                    _dxmax_x = max(_dxmax_x, _x)
+                    _dxmin_y = min(_dxmin_y, _y)
+                    _dxmax_y = max(_dxmax_y, _y)
+                except Exception:
+                    pass
+            full_dxf_w = _dxmax_x - _dxmin_x
+            full_dxf_h = _dxmax_y - _dxmin_y
+        except Exception:
+            full_dxf_w = dxf_match_x
+            full_dxf_h = dxf_match_y
+
+        # Reject if: DXF is large (>15 units) AND calibration covers <25% of
+        # the DXF in that axis.  This catches title-block-only calibration on
+        # large drawings where extrapolation would be unreliable.
+        if full_dxf_w > 15.0 and dxf_match_x / full_dxf_w < 0.25:
+            return None
+        if full_dxf_h > 15.0 and dxf_match_y / full_dxf_h < 0.15:
+            return None
+
     return M
 
 
@@ -206,6 +283,54 @@ def _map_pdf_point_to_dxf(pt: Tuple[float, float], affine: Optional[Any]) -> Tup
     x = affine[0, 0] * pt[0] + affine[1, 0] * pt[1] + affine[2, 0]
     y = affine[0, 1] * pt[0] + affine[1, 1] * pt[1] + affine[2, 1]
     return (float(x), float(y))
+
+
+def _border_calibration(pdf_path: str, dxf_path: str) -> Any:
+    """Compute a border calibration affine matrix mapping PDF page.rect coords to DXF coords.
+
+    This is used as a fallback when text-label affine calibration fails or is
+    unreliable.  It maps the PDF content bounding box to the DXF model space
+    extents, accounting for the Y-axis flip (PDF Y goes down, DXF Y goes up).
+    """
+    import numpy as np
+    from cli_anything.qcad.utils.cloud_overlay import _pdf_content_bbox, _compute_dxf_extents
+
+    pdf_left, pdf_top, pdf_right, pdf_bottom = _pdf_content_bbox(pdf_path)
+    min_x, min_y, max_x, max_y = _compute_dxf_extents(dxf_path)
+
+    pdf_w = pdf_right - pdf_left
+    pdf_h = pdf_bottom - pdf_top
+    dxf_w = max_x - min_x
+    dxf_h = max_y - min_y
+
+    if pdf_w < 1 or pdf_h < 1 or dxf_w < 0.01 or dxf_h < 0.01:
+        return None
+
+    # We want a matrix M such that:
+    #   dxf_x = M[0,0] * pdf_x + M[1,0] * pdf_y + M[2,0]
+    #   dxf_y = M[0,1] * pdf_x + M[1,1] * pdf_y + M[2,1]
+    #
+    # Border mapping:
+    #   dxf_x = (pdf_x - pdf_left) / pdf_w * dxf_w + min_x
+    #   dxf_y = (pdf_bottom - pdf_y) / pdf_h * dxf_h + min_y
+    #
+    # So:
+    #   M[0,0] = dxf_w / pdf_w        M[0,1] = 0
+    #   M[1,0] = 0                    M[1,1] = -dxf_h / pdf_h
+    #   M[2,0] = min_x - pdf_left * dxf_w / pdf_w
+    #   M[2,1] = min_y + pdf_bottom * dxf_h / pdf_h
+
+    sx = dxf_w / pdf_w
+    sy = -dxf_h / pdf_h
+    tx = min_x - pdf_left * sx
+    ty = min_y + pdf_bottom * (-sy)
+
+    M = np.array([
+        [sx, 0.0],
+        [0.0, sy],
+        [tx, ty],
+    ])
+    return M
 
 
 def _map_pdf_region_to_dxf(region: Dict[str, Any], affine: Optional[Any]) -> Dict[str, Any]:
@@ -449,6 +574,11 @@ class MarkupPlanner:
         index.load()
         pdf_spans = _extract_pdf_text_spans(pdf_path)
         affine = _calibrate_affine(pdf_spans, index)
+
+        # If affine calibration failed (too few matches or high residual),
+        # fall back to border calibration: map PDF content bbox → DXF extents.
+        if affine is None:
+            affine = _border_calibration(pdf_path, dxf_path)
 
         tasks: List[Task] = []
         for annot in annotations:
