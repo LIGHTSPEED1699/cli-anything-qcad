@@ -128,9 +128,103 @@ def _point_in_polygon(pt: Tuple[float, float], polygon: List[Tuple[float, float]
         return False
 
 
+def _segments_intersect(p1, p2, p3, p4) -> bool:
+    """Return True if segment p1-p2 properly crosses segment p3-p4."""
+    def cross(o, a, b):
+        return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+    d1 = cross(p3, p4, p1)
+    d2 = cross(p3, p4, p2)
+    d3 = cross(p1, p2, p3)
+    d4 = cross(p1, p2, p4)
+    if ((d1 > 0 and d2 < 0) or (d1 < 0 and d2 > 0)) and \
+       ((d3 > 0 and d4 < 0) or (d3 < 0 and d4 > 0)):
+        return True
+    # Collinear / on-segment cases omitted for simplicity; the point-in-polygon
+    # check already catches entities with endpoints inside the polygon.
+    return False
+
+
+def _segment_intersects_polygon(p1, p2, polygon) -> bool:
+    """True if segment p1-p2 crosses any edge of the polygon."""
+    # Fast check: if either endpoint is inside, it intersects
+    if _point_in_polygon(p1, polygon) or _point_in_polygon(p2, polygon):
+        return True
+    for i in range(len(polygon)):
+        p3 = polygon[i]
+        p4 = polygon[(i + 1) % len(polygon)]
+        if _segments_intersect(p1, p2, p3, p4):
+            return True
+    return False
+
+
 def _entity_inside_polygon(ent, polygon: List[Tuple[float, float]],
                            min_points_inside: int = 1,
                            require_all_endpoints: bool = False) -> bool:
+    """Test whether an entity is inside a cloud polygon.
+
+    Uses three strategies depending on entity type:
+    1. Point-like entities (TEXT, MTEXT, INSERT): point-in-polygon.
+    2. Line-segment entities (LINE, LWPOLYLINE, ARC, CIRCLE): segment-polygon
+       intersection — catches wires that cross through the cloud without
+       having endpoints inside.
+    3. Area entities (SOLID, HATCH): centroid + vertex point-in-polygon.
+    """
+    etype = ent.dxftype()
+
+    # --- Segment-based entities: use segment-polygon intersection ---
+    if etype == "LINE":
+        s = ent.dxf.start
+        e = ent.dxf.end
+        return _segment_intersects_polygon((s.x, s.y), (e.x, e.y), polygon)
+
+    if etype == "LWPOLYLINE":
+        pts = [(p[0], p[1]) for p in ent.get_points("xy")]
+        if not pts:
+            return False
+        if ent.closed:
+            pts.append(pts[0])
+        for i in range(len(pts) - 1):
+            if _segment_intersects_polygon(pts[i], pts[i + 1], polygon):
+                return True
+        # Also check centroid
+        cx = sum(p[0] for p in pts) / len(pts)
+        cy = sum(p[1] for p in pts) / len(pts)
+        return _point_in_polygon((cx, cy), polygon)
+
+    if etype == "ARC":
+        cx, cy = ent.dxf.center.x, ent.dxf.center.y
+        r = ent.dxf.radius
+        sa = math.radians(ent.dxf.start_angle)
+        ea = math.radians(ent.dxf.end_angle)
+        pts = [(cx + r * math.cos(a), cy + r * math.sin(a))
+               for a in [sa + i * (ea - sa) / 16 for i in range(17)]]
+        for i in range(len(pts) - 1):
+            if _segment_intersects_polygon(pts[i], pts[i + 1], polygon):
+                return True
+        return _point_in_polygon((cx, cy), polygon)
+
+    if etype == "CIRCLE":
+        cx, cy = ent.dxf.center.x, ent.dxf.center.y
+        r = ent.dxf.radius
+        pts = [(cx + r * math.cos(a), cy + r * math.sin(a))
+               for a in [i * math.pi / 8 for i in range(16)]]
+        for i in range(len(pts) - 1):
+            if _segment_intersects_polygon(pts[i], pts[i + 1], polygon):
+                return True
+        return _point_in_polygon((cx, cy), polygon)
+
+    if etype == "ELLIPSE":
+        cx, cy = ent.dxf.center.x, ent.dxf.center.y
+        rx = ent.dxf.major_axis[0]
+        ry = ent.dxf.major_axis[1]
+        pts = [(cx + rx * math.cos(a), cy + ry * math.sin(a))
+               for a in [i * math.pi / 8 for i in range(16)]]
+        for i in range(len(pts) - 1):
+            if _segment_intersects_polygon(pts[i], pts[i + 1], polygon):
+                return True
+        return _point_in_polygon((cx, cy), polygon)
+
+    # --- Point-like entities: point-in-polygon ---
     pts = _entity_geometry_points(ent)
     if not pts:
         return False

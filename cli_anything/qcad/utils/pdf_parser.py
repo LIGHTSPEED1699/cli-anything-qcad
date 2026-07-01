@@ -89,6 +89,13 @@ def _rects_overlap(rect1: fitz.Rect, rect2: fitz.Rect, tolerance: float = 0) -> 
     return intersect.width > 0 and intersect.height > 0
 
 
+def _rect_gap(rect1: fitz.Rect, rect2: fitz.Rect) -> float:
+    """Minimum gap between two rects (0 if they overlap)."""
+    dx = max(0, max(rect2.x0 - rect1.x1, rect1.x0 - rect2.x1))
+    dy = max(0, max(rect2.y0 - rect1.y1, rect1.y0 - rect2.y1))
+    return (dx * dx + dy * dy) ** 0.5
+
+
 class PdfAnnotationParser:
     """Extract actionable annotations from a PDF markup file.
 
@@ -174,29 +181,109 @@ class PdfAnnotationParser:
                         "page": page_num,
                     })
 
+            # Prepare FreeText rects (normalized) for two-pass association.
+            freetext_rects: List[Tuple[Any, fitz.Rect, str]] = []
             for ft_annot in freetext_annots:
                 text = ft_annot.info.get("content", "").strip()
+                rect = self._normalize_rect(ft_annot.rect, page)
+                freetext_rects.append((ft_annot, rect, text))
+
+            # Two-pass FreeText→Polygon association.
+            # Pass 1: direct overlap (tol=0) so callouts placed on top of a
+            # cloud claim it first.
+            # Pass 2: nearest unclaimed polygon within 50pt for callouts that
+            # are near but not on top of a cloud.
+            # This prevents a "delete" callout from stealing a cloud that
+            # already has a "mark spare" callout directly on it.
+            claimed_polygons: Dict[int, Dict[str, Any]] = {}
+            ft_to_cloud: Dict[int, Optional[List[Tuple[float, float]]]] = {}
+
+            # Pass 1: direct overlap
+            for ft_idx, (ft_annot, rect, text) in enumerate(freetext_rects):
+                if not _is_actionable(text):
+                    ft_to_cloud[ft_idx] = None
+                    continue
+                for c_idx, cloud in enumerate(all_clouds):
+                    if c_idx in claimed_polygons:
+                        continue
+                    if _rects_overlap(rect, fitz.Rect(*cloud["rect"]), tolerance=0):
+                        claimed_polygons[c_idx] = cloud
+                        ft_to_cloud[ft_idx] = cloud["vertices"]
+                        break
+                if ft_idx not in ft_to_cloud:
+                    ft_to_cloud[ft_idx] = None
+
+            # Pass 2: nearest unclaimed within 50pt
+            for ft_idx, (ft_annot, rect, text) in enumerate(freetext_rects):
+                if ft_to_cloud.get(ft_idx) is not None:
+                    continue
                 if not _is_actionable(text):
                     continue
-                rect = self._normalize_rect(ft_annot.rect, page)
-                author = ft_annot.info.get("title", "")
-
-                # Try to find an overlapping/nearby polygon cloud for this FreeText
-                cloud_vertices = None
-                for cloud in all_clouds:
-                    if _rects_overlap(rect, fitz.Rect(*cloud["rect"]), tolerance=80):
-                        cloud_vertices = cloud["vertices"]
-                        break
-
-                # Fallback to line arrow if no cloud polygon found
-                if cloud_vertices is None:
-                    for line_annot in line_annots:
-                        line_rect = self._normalize_rect(line_annot.rect, page)
-                        if _rects_overlap(rect, line_rect, tolerance=50):
-                            if hasattr(line_annot, 'vertices') and line_annot.vertices:
-                                cloud_vertices = self._normalize_vertices(
-                                    list(line_annot.vertices), page)
+                best_gap = 51.0
+                best_verts: Optional[List[Tuple[float, float]]] = None
+                for c_idx, cloud in enumerate(all_clouds):
+                    if c_idx in claimed_polygons:
+                        continue
+                    gap = _rect_gap(rect, fitz.Rect(*cloud["rect"]))
+                    if gap < best_gap:
+                        best_gap = gap
+                        best_verts = cloud["vertices"]
+                if best_verts is not None:
+                    ft_to_cloud[ft_idx] = best_verts
+                    # Mark the polygon as claimed so standalone emitter
+                    # doesn't duplicate it and later FreeTexts skip it.
+                    for c_idx, cloud in enumerate(all_clouds):
+                        if cloud["vertices"] is best_verts:
+                            claimed_polygons[c_idx] = cloud
                             break
+
+            # Fallback to line annotations for FreeTexts with no polygon cloud.
+            # Multiple overlapping Line annotations (e.g. scratch marks forming
+            # an X) are combined into a bbox-derived polygon.
+            for ft_idx, (ft_annot, rect, text) in enumerate(freetext_rects):
+                cloud_vertices = ft_to_cloud.get(ft_idx)
+                if cloud_vertices is not None:
+                    continue  # already matched to a polygon
+                if not _is_actionable(text):
+                    continue
+
+                matched_verts: List[Tuple[float, float]] = []
+                for line_annot in line_annots:
+                    line_rect = self._normalize_rect(line_annot.rect, page)
+                    if _rects_overlap(rect, line_rect, tolerance=50):
+                        if hasattr(line_annot, "vertices") and line_annot.vertices:
+                            matched_verts.extend(
+                                self._normalize_vertices(
+                                    list(line_annot.vertices), page))
+                if len(matched_verts) >= 2:
+                    xs = [v[0] for v in matched_verts]
+                    ys = [v[1] for v in matched_verts]
+                    x0, x1 = min(xs), max(xs)
+                    y0, y1 = min(ys), max(ys)
+                    if len(matched_verts) == 2:
+                        dx = x1 - x0
+                        dy = y1 - y0
+                        length = max(abs(dx), abs(dy), 1)
+                        px = -dy / length * 5
+                        py = dx / length * 5
+                        cloud_vertices = [
+                            (x0 + px, y0 + py),
+                            (x0 - px, y0 - py),
+                            (x1 - px, y1 - py),
+                            (x1 + px, y1 + py),
+                        ]
+                    else:
+                        cloud_vertices = [
+                            (x0, y0), (x1, y0), (x1, y1), (x0, y1),
+                        ]
+                    ft_to_cloud[ft_idx] = cloud_vertices
+
+            # Emit annotations for each FreeText
+            for ft_idx, (ft_annot, rect, text) in enumerate(freetext_rects):
+                if not _is_actionable(text):
+                    continue
+                cloud_vertices = ft_to_cloud.get(ft_idx)
+                author = ft_annot.info.get("title", "")
 
                 target_bbox = [rect.x0, rect.y0, rect.x1, rect.y1]
                 if cloud_vertices and len(cloud_vertices) >= 2:
@@ -216,29 +303,25 @@ class PdfAnnotationParser:
                     confidence=confidence,
                 ))
 
-            # Also emit standalone polygon clouds that look like deletion clouds
-            for cloud in all_clouds:
-                if not cloud["text"]:
-                    # Skip if any FreeText already claimed this cloud
-                    claimed = False
-                    cloud_rect = fitz.Rect(*cloud["rect"])
-                    for ft_annot in freetext_annots:
-                        ft_rect = self._normalize_rect(ft_annot.rect, page)
-                        if _rects_overlap(ft_rect, cloud_rect, tolerance=80):
-                            claimed = True
-                            break
-                    if claimed:
-                        continue
-                    action_type, confidence = AnnotationType.DELETE.value, 0.7
-                    annotations.append(Annotation(
-                        text="delete clouded objects",
-                        target_bbox=cloud["rect"],
-                        page=cloud["page"],
-                        annot_type="Polygon",
-                        arrow_vertices=cloud["vertices"],
-                        inferred_action=action_type,
-                        confidence=confidence,
-                    ))
+            # Also emit standalone polygon clouds that look like deletion clouds.
+            # A polygon is "claimed" if any FreeText was associated with it
+            # in the two-pass matching above.
+            claimed_cloud_indices = set(claimed_polygons.keys())
+            for c_idx, cloud in enumerate(all_clouds):
+                if c_idx in claimed_cloud_indices:
+                    continue
+                if cloud["text"]:
+                    continue  # has its own text content
+                action_type, confidence = AnnotationType.DELETE.value, 0.7
+                annotations.append(Annotation(
+                    text="delete clouded objects",
+                    target_bbox=cloud["rect"],
+                    page=cloud["page"],
+                    annot_type="Polygon",
+                    arrow_vertices=cloud["vertices"],
+                    inferred_action=action_type,
+                    confidence=confidence,
+                ))
 
         doc.close()
         annotations.sort(key=lambda a: (a.page, a.target_bbox[1]))
