@@ -226,8 +226,8 @@ class PdfAnnotationParser:
                     matched_cloud_indices.add(best_c_idx)
 
             # Fallback to line annotations for FreeTexts with no polygon cloud.
-            # Multiple overlapping Line annotations (e.g. scratch marks forming
-            # an X) are combined into a bbox-derived polygon.
+            # First, check if the FreeText itself has callout vertices (PyMuPDF
+            # stores callout line points directly on FreeText annotations).
             for ft_idx, (ft_annot, rect, text) in enumerate(freetext_rects):
                 cloud_vertices = ft_to_cloud.get(ft_idx)
                 if cloud_vertices is not None:
@@ -235,36 +235,29 @@ class PdfAnnotationParser:
                 if not _is_actionable(text):
                     continue
 
-                matched_verts: List[Tuple[float, float]] = []
-                for line_annot in line_annots:
-                    line_rect = self._normalize_rect(line_annot.rect, page)
-                    if _rects_overlap(rect, line_rect, tolerance=50):
-                        if hasattr(line_annot, "vertices") and line_annot.vertices:
-                            matched_verts.extend(
-                                self._normalize_vertices(
-                                    list(line_annot.vertices), page))
-                if len(matched_verts) >= 2:
-                    xs = [v[0] for v in matched_verts]
-                    ys = [v[1] for v in matched_verts]
-                    x0, x1 = min(xs), max(xs)
-                    y0, y1 = min(ys), max(ys)
-                    if len(matched_verts) == 2:
-                        dx = x1 - x0
-                        dy = y1 - y0
-                        length = max(abs(dx), abs(dy), 1)
-                        px = -dy / length * 5
-                        py = dx / length * 5
-                        cloud_vertices = [
-                            (x0 + px, y0 + py),
-                            (x0 - px, y0 - py),
-                            (x1 - px, y1 - py),
-                            (x1 + px, y1 + py),
-                        ]
-                    else:
-                        cloud_vertices = [
-                            (x0, y0), (x1, y0), (x1, y1), (x0, y1),
-                        ]
-                    ft_to_cloud[ft_idx] = cloud_vertices
+                # Check FreeText's own vertices (callout line)
+                ft_verts = []
+                if hasattr(ft_annot, "vertices") and ft_annot.vertices:
+                    ft_verts = self._normalize_vertices(
+                        list(ft_annot.vertices), page)
+
+                if ft_verts:
+                    # FreeText with a callout line — store vertices so the
+                    # planner can use the arrow tip as the target location.
+                    ft_to_cloud[ft_idx] = ft_verts
+
+                # Also check for nearby Line annotations (separate arrow).
+                if not ft_verts:
+                    matched_verts: List[Tuple[float, float]] = []
+                    for line_annot in line_annots:
+                        line_rect = self._normalize_rect(line_annot.rect, page)
+                        if _rects_overlap(rect, line_rect, tolerance=50):
+                            if hasattr(line_annot, "vertices") and line_annot.vertices:
+                                matched_verts.extend(
+                                    self._normalize_vertices(
+                                        list(line_annot.vertices), page))
+                    if len(matched_verts) >= 2:
+                        ft_to_cloud[ft_idx] = matched_verts
 
             # Emit annotations for each FreeText
             for ft_idx, (ft_annot, rect, text) in enumerate(freetext_rects):

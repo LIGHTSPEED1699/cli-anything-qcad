@@ -80,6 +80,58 @@ def _nearest_text_style(doc, point: Tuple[float, float], tol: float = 1.0) -> Di
     }
 
 
+def _point_to_segment_dist(pt: Tuple[float, float],
+                           a: Tuple[float, float],
+                           b: Tuple[float, float]) -> Tuple[float, Tuple[float, float]]:
+    """Distance from point to line segment a-b, and closest point on segment."""
+    import math
+    dx, dy = b[0] - a[0], b[1] - a[1]
+    seg_len2 = dx * dx + dy * dy
+    if seg_len2 < 1e-12:
+        d = math.hypot(pt[0] - a[0], pt[1] - a[1])
+        return d, a
+    t = ((pt[0] - a[0]) * dx + (pt[1] - a[1]) * dy) / seg_len2
+    t = max(0.0, min(1.0, t))
+    closest = (a[0] + t * dx, a[1] + t * dy)
+    d = math.hypot(pt[0] - closest[0], pt[1] - closest[1])
+    return d, closest
+
+
+def _snap_to_nearest_wire(msp, point: Tuple[float, float],
+                          max_dist: float = 2.0) -> Optional[Tuple[float, float]]:
+    """Find the nearest LINE entity to *point* and return a label position on it.
+
+    The returned point is the midpoint of the nearest line segment, shifted
+    slightly above (in +y) for label readability.  Returns None if no LINE
+    is within *max_dist*.
+    """
+    import math
+    best_dist = float("inf")
+    best_line = None
+
+    for ent in msp:
+        if ent.dxftype() != "LINE":
+            continue
+        try:
+            a = (ent.dxf.start.x, ent.dxf.start.y)
+            b = (ent.dxf.end.x, ent.dxf.end.y)
+        except Exception:
+            continue
+        d, closest = _point_to_segment_dist(point, a, b)
+        if d < best_dist:
+            best_dist = d
+            best_line = (a, b, closest)
+
+    if best_dist > max_dist or best_line is None:
+        return None
+
+    a, b, closest = best_line
+    # Place label at the closest point on the line, offset slightly in +y
+    # so the text sits just above the wire (standard wire label convention).
+    offset = 0.15  # ~1.5x typical text height
+    return (closest[0], closest[1] + offset)
+
+
 class ChangeTextValueEngine:
     """Replace existing text/MTEXT/ATTRIB content."""
 
@@ -196,6 +248,13 @@ class AddTextLabelEngine:
         if not point:
             return {"engine": "add_text_label", "success": False, "error": "no insertion point"}
 
+        # Snap to nearest LINE entity: if the point is near a wire line,
+        # place the text on that line (midpoint of nearest line segment).
+        # This corrects for affine calibration residual error.
+        snap_pt = _snap_to_nearest_wire(msp, point, max_dist=2.0)
+        if snap_pt:
+            point = snap_pt
+
         style = _nearest_text_style(doc, point)
         if layer:
             style["layer"] = layer
@@ -214,5 +273,6 @@ class AddTextLabelEngine:
             "engine": "add_text_label",
             "text": text,
             "insert": point,
+            "snapped_to_wire": snap_pt is not None,
             "output_dxf": out_dxf,
         }

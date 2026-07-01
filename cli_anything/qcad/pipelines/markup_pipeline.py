@@ -189,7 +189,28 @@ class MarkupPipeline:
             elif task.task_type in ("change_text_value", "add_text_label"):
                 if "point" not in params:
                     reg = task.dxf_region
-                    if reg.get("type") == "bbox":
+                    # For add_text_label with a callout arrow, use the arrow
+                    # tip (last vertex) as the insertion point — that's where
+                    # the user pointed.  Fall back to the region bbox otherwise.
+                    source = task.source_annotation or {}
+                    arrow_verts = source.get("arrow_vertices") or source.get("cloud_vertices")
+                    if arrow_verts and task.task_type == "add_text_label":
+                        # Map the last vertex (arrow tip) from PDF to DXF
+                        tip_pdf = arrow_verts[-1]
+                        # dxf_region polygon bbox gives us the mapped region;
+                        # but we need the specific DXF point for the tip.
+                        # If the region is a polygon, the verts are already
+                        # mapped to DXF in dxf_region["verts"].
+                        if reg and reg.get("type") == "polygon" and reg.get("verts"):
+                            dxf_verts = reg["verts"]
+                            # Last vertex = arrow tip in DXF space
+                            tip_dxf = dxf_verts[-1]
+                            params["point"] = (tip_dxf[0], tip_dxf[1])
+                            params["near_point"] = params["point"]
+                        elif reg and reg.get("type") == "point":
+                            params["point"] = reg["coords"]
+                            params["near_point"] = reg["coords"]
+                    elif reg.get("type") == "bbox":
                         c = reg["coords"]
                         params["point"] = (c[0], c[3])
                         params["near_point"] = params["point"]
