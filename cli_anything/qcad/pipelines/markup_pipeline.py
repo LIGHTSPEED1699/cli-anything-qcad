@@ -90,7 +90,8 @@ class MarkupPipeline:
         # Generate cloud detection overlay for diagnostics
         overlay_png = str(output_dir / "cloud_detection_overlay.png")
         try:
-            generate_cloud_overlay(str(pdf_work), overlay_png)
+            from cli_anything.qcad.utils.cloud_overlay import generate_dwg_cloud_overlay
+            generate_dwg_cloud_overlay(str(dwg_work), str(pdf_work), overlay_png)
         except Exception as exc:
             # Non-fatal: overlay is diagnostic, pipeline should continue
             overlay_png = None
