@@ -21,6 +21,7 @@ from cli_anything.qcad.engines.delete_clouded_entities import DeleteCloudedEntit
 from cli_anything.qcad.engines.text_value import ChangeTextValueEngine, AddTextLabelEngine
 from cli_anything.qcad.engines.clone_terminal_wires import CloneTerminalWiresEngine
 from cli_anything.qcad.engines.cloud_clone import CloudCloneEngine
+from cli_anything.qcad.engines.text_based_clone import TextBasedCloneEngine
 from cli_anything.qcad.engines.extra_ops import ResizeBoundingBoxEngine, MarkSpareWiresEngine
 from cli_anything.qcad.engines.geometry_ops import AddDimensionEngine, AddLeaderEngine, MoveEntityEngine
 from cli_anything.qcad.utils.visual_verify import QcadRenderer
@@ -35,7 +36,8 @@ class MarkupPipeline:
         "change_text_value": ChangeTextValueEngine,
         "add_text_label": AddTextLabelEngine,
         "clone_terminal_wires": CloneTerminalWiresEngine,
-        "cloud_clone": CloudCloneEngine,
+        "cloud_clone": TextBasedCloneEngine,
+        "text_based_clone": TextBasedCloneEngine,
         "resize_bounding_box": ResizeBoundingBoxEngine,
         "mark_spare_wires": MarkSpareWiresEngine,
         "add_dimension": AddDimensionEngine,
