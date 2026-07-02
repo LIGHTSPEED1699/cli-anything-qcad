@@ -129,6 +129,12 @@ def classify(annotation_text: str) -> ModificationCategory:
     if any(v in text_lower for v in ["delete", "remove", "erase", "eliminate"]):
         return CATEGORIES["delete"]
 
+    # Clone/reorder takes priority over text_change when "copy" or "duplicate"
+    # is present — the annotation often says "copy X and change related texts"
+    # but the primary action is cloning, not text editing.
+    if any(v in text_lower for v in ["copy", "clone", "duplicate", "replicate"]):
+        return CATEGORIES["clone"]
+
     best = CATEGORIES["ambiguous"]
     best_score = 0
     for cat in CATEGORIES.values():

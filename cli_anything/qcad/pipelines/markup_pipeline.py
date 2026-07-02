@@ -20,6 +20,7 @@ from cli_anything.qcad.core.planner import MarkupPlanner, Task
 from cli_anything.qcad.engines.delete_clouded_entities import DeleteCloudedEntitiesEngine
 from cli_anything.qcad.engines.text_value import ChangeTextValueEngine, AddTextLabelEngine
 from cli_anything.qcad.engines.clone_terminal_wires import CloneTerminalWiresEngine
+from cli_anything.qcad.engines.cloud_clone import CloudCloneEngine
 from cli_anything.qcad.engines.extra_ops import ResizeBoundingBoxEngine, MarkSpareWiresEngine
 from cli_anything.qcad.engines.geometry_ops import AddDimensionEngine, AddLeaderEngine, MoveEntityEngine
 from cli_anything.qcad.utils.visual_verify import QcadRenderer
@@ -34,6 +35,7 @@ class MarkupPipeline:
         "change_text_value": ChangeTextValueEngine,
         "add_text_label": AddTextLabelEngine,
         "clone_terminal_wires": CloneTerminalWiresEngine,
+        "cloud_clone": CloudCloneEngine,
         "resize_bounding_box": ResizeBoundingBoxEngine,
         "mark_spare_wires": MarkSpareWiresEngine,
         "add_dimension": AddDimensionEngine,
@@ -104,6 +106,7 @@ class MarkupPipeline:
             "change_text_value": 2,
             "add_text_label": 3,
             "clone_terminal_wires": 4,
+            "cloud_clone": 4,
             "mark_spare_wires": 9,
         }
         tasks.sort(key=lambda t: (order.get(t.task_type, 5), t.task_id))
@@ -183,7 +186,7 @@ class MarkupPipeline:
         if params_override:
             params.update(params_override)
         if task.dxf_region:
-            if task.task_type == "delete_clouded_entities":
+            if task.task_type in ("delete_clouded_entities", "cloud_clone"):
                 params.setdefault("regions", []).append(task.dxf_region)
             elif task.task_type == "mark_spare_wires":
                 params["region"] = task.dxf_region
@@ -262,7 +265,7 @@ class MarkupPipeline:
             p["threshold"] = max(0.5, p.get("threshold", 0.9) - 0.2 * attempt)
         elif task_type == "mark_spare_wires":
             p["label_offset"] = p.get("label_offset", 2.0) + 2.0 * attempt
-        elif task_type == "clone_terminal_wires":
+        elif task_type in ("clone_terminal_wires", "cloud_clone"):
             p["tolerance"] = p.get("tolerance", 1.0) + 1.0 * attempt
         elif task_type == "add_text_label":
             p["height"] = p.get("height", 2.5) * (1 + 0.2 * attempt)

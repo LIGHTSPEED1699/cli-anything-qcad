@@ -21,6 +21,7 @@ class TaskType(Enum):
     CHANGE_TEXT_VALUE = "change_text_value"
     ADD_TEXT_LABEL = "add_text_label"
     CLONE_TERMINAL_WIRES = "clone_terminal_wires"
+    CLOUD_CLONE = "cloud_clone"
     RESIZE_BOUNDING_BOX = "resize_bounding_box"
     MARK_SPARE_WIRES = "mark_spare_wires"
     ADD_DIMENSION = "add_dimension"
@@ -426,7 +427,15 @@ def _infer_task_from_annotation(annot: Dict[str, Any], affine: Optional[Any],
             parameters = {"text": new_value}
         constraints = ["match text style of nearby labels"]
     elif cat_name in ("clone", "reorder"):
-        task_type = TaskType.CLONE_TERMINAL_WIRES.value
+        # If we have a cloud polygon, use cloud-based clone (more accurate).
+        # Otherwise fall back to text-based row clone.
+        has_cloud = bool(annot.get("cloud_vertices") or annot.get("arrow_vertices"))
+        if has_cloud:
+            task_type = TaskType.CLOUD_CLONE.value
+            parameters["target_description"] = text
+            parameters["text"] = text
+        else:
+            task_type = TaskType.CLONE_TERMINAL_WIRES.value
         constraints = ["do not clone terminal INSERT blocks", "deduplicate geometry"]
     elif cat_name == "resize":
         task_type = TaskType.RESIZE_BOUNDING_BOX.value
