@@ -56,6 +56,29 @@ cli-anything-qcad parse markup.pdf --json
 cli-anything-qcad render drawing.dwg --out preview.png
 ```
 
+## Visual Verification (QCAD GUI + cua-driver)
+
+The pipeline supports two visual verification modes:
+
+**1. Headless pixel diff** (`cli_anything/qcad/utils/visual_verify.py`) — renders original and modified DWG via `dwg2bmp`, computes pixel difference map. Fast, no GUI required.
+
+**2. VLM semantic verification** (`cli_anything/qcad/utils/visual_verifier.py`) — opens the DWG in **QCAD GUI with the AT-SPI bridge activated** (`QT_LINUX_ACCESSIBILITY_ALWAYS_ON=1`), captures a screenshot via **cua-driver** (background, no focus steal), and sends it to an Ollama vision model for semantic yes/no verification.
+
+Key features of the cua-driver verifier:
+- **AT-SPI bridge** — QCAD's bundled Qt 6.11.0 has the AT-SPI bridge compiled into `libQt6Gui.so.6`. The verifier launches QCAD with `QT_LINUX_ACCESSIBILITY_ALWAYS_ON=1` to activate it, making the full widget tree (menus, toolbars, scroll bars) visible via AT-SPI.
+- **Background window detection** — uses `cua-driver call list_windows` instead of `xdotool search`, reliable even with QCAD's bash-wrapper → `qcad-bin` PID split.
+- **No focus stealing** — screenshots are captured in the background via cua-driver's `get_window_state` with `screenshot_out_file`, no `windowactivate`/`windowraise`.
+- **Cua-driver daemon** — requires `cua-driver serve` to be running (see [cua-driver docs](https://github.com/trycua/cua)).
+- **VLM endpoint** — defaults to `http://192.168.2.15:11434` with `qwen2.5vl:latest`; override via `OLLAMA_URL` and `VISION_MODEL` env vars.
+
+```bash
+# Direct VLM verification via CLI
+cli-anything-qcad verify output.dwg --question "Are the cloned terminal labels correct?"
+
+# Pipeline uses this automatically when --per-task-vlm or default final verification is enabled
+cli-anything-qcad apply drawing.dwg markup.pdf -o drawing_modified.dwg --per-task-vlm
+```
+
 ## Dependencies
 
 - Python 3.10+
