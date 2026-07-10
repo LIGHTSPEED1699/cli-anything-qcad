@@ -50,6 +50,31 @@ function main() {
     print("  Imported. Entities: " + doc.queryAllEntities().length);
     print("  Layers: " + doc.queryAllLayers().length);
 
+    // Fix layer visibility: force all layers ON before DWG export.
+    // The QCAD ODA DWG writer re-introduces negative (OFF) layer colors
+    // even when the input DXF has positive (ON) colors. This makes cloned
+    // entities on layers like E-SYMB and E-TEXT invisible in the output DWG.
+    // Without this fix, cloned wires/labels are present in the DXF but
+    // invisible in the rendered DWG — VLM verification then falsely reports
+    // missing wires at target terminals.
+    print("Fixing layer visibility (force all layers ON)...");
+    var layerIds = doc.queryAllLayers();
+    var layerOp = new RModifyObjectsOperation();
+    var layerFixCount = 0;
+    for (var li = 0; li < layerIds.length; li++) {
+        var layer = doc.queryLayer(layerIds[li]);
+        if (!layer) continue;
+        if (layer.isOff()) { layer.setOff(false); layerOp.addObject(layer, false); layerFixCount++; }
+        if (layer.isFrozen()) { layer.setFrozen(false); layerOp.addObject(layer, false); layerFixCount++; }
+        if (layer.isLocked()) { layer.setLocked(false); layerOp.addObject(layer, false); layerFixCount++; }
+    }
+    if (layerFixCount > 0) {
+        di.applyOperation(layerOp);
+        print("  Fixed " + layerFixCount + " layer properties (OFF/Frozen/Locked → ON)");
+    } else {
+        print("  All layers already ON/Unfrozen/Unlocked");
+    }
+
     print("Exporting DWG...");
     var formats = ["DWG R32 (2018)", "R32 (2018) DWG", "DWG", "R32"];
     var success = false;

@@ -100,7 +100,10 @@ class QcadRenderer:
             tmp_input = Path(tmpdir) / in_path.name
             shutil.copy(file_path, tmp_input)
             out_bmp = Path(tmpdir) / (in_path.stem + ".bmp")
-            cmd = [exe, "-x", "-f", str(tmp_input)]
+            # Use explicit width/height with -zoom-all instead of bare -x/-r flags.
+            # dwg2bmp writes output next to input (ignores -o), so we copy to tmpdir.
+            cmd = [exe, "-x", str(self.width), "-y", "1200",
+                   "-zoom-all", "-m", "0", "-f", str(tmp_input)]
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
             if result.returncode != 0 or not out_bmp.exists():
                 return False

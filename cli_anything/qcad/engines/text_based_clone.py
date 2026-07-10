@@ -20,6 +20,12 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 import ezdxf
 
+from cli_anything.qcad.utils.terminal_positions import (
+    discover_terminal_positions as _discover_terminal_positions_impl,
+    row_y_center as _term_row_y_center,
+)
+from cli_anything.qcad.utils.layer_fix import fix_layer_visibility
+
 
 # ── Terminal discovery helpers (shared with cloud_clone.py) ──────────────────
 
@@ -62,30 +68,24 @@ def _infer_rows_from_description(desc: str) -> Tuple[List[int], List[int]]:
 
 
 def _discover_terminal_positions(doc) -> Dict[int, Dict]:
-    """Find all terminal label positions from TEXT entities like '(4)' in modelspace.
+    """Find all terminal positions from Wlltermn INSERT ATTRIB (TERMNUM).
+
+    Uses the shared terminal_positions module which correctly reads ATTRIB
+    values from Wlltermn block inserts (uniform 0.250 spacing) rather than
+    standalone TEXT '(N)' entities (non-uniform 0.25/0.50 spacing).
 
     Returns {terminal_number: {"y": float, "x": float, "handle": str}}
     """
-    terminals: Dict[int, Dict] = {}
-    for ent in doc.modelspace():
-        if ent.dxftype() != "TEXT":
-            continue
-        txt = (ent.dxf.text or "").strip()
-        m = re.match(r"^\((\d+)\)$", txt)
-        if m:
-            tnum = int(m.group(1))
-            x, y = ent.dxf.insert.x, ent.dxf.insert.y
-            if tnum not in terminals:
-                terminals[tnum] = {"y": y, "x": x, "handle": ent.dxf.handle}
-    return terminals
+    return _discover_terminal_positions_impl(doc)
 
 
 def _row_y_center(doc, row_num: int) -> Optional[float]:
-    terminals = _discover_terminal_positions(doc)
-    t = terminals.get(row_num)
-    if t:
-        return t["y"]
-    return None
+    """Return the Y-coordinate of a terminal row by its number.
+
+    Uses Wlltermn ATTRIB (TERMNUM) lookup — the correct method.
+    Falls back to TEXT '(N)' labels for drawings without block attributes.
+    """
+    return _term_row_y_center(doc, row_num)
 
 
 def _entity_text(ent) -> str:
@@ -447,6 +447,12 @@ class TextBasedCloneEngine:
             f"Data loss: {len(new_raw)} < {len(raw)}"
 
         Path(out_dxf).write_bytes(new_raw)
+
+        # Fix layer visibility: flip negative colors to positive (layers ON)
+        fixed_dxf = out_dxf + ".fixed.dxf"
+        fix_layer_visibility(out_dxf, fixed_dxf)
+        import shutil as _shutil
+        _shutil.move(fixed_dxf, out_dxf)
 
         # Verify with ezdxf
         try:

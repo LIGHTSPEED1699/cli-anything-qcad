@@ -129,7 +129,12 @@ class QcadVlmVerifier:
         # Verify the AT-SPI tree is populated
         tree = self._cua_call("get_window_state", {"pid": self._pid, "window_id": wid,
                                                     "max_elements": 10, "include_screenshot": False})
-        element_count = tree.get("element_count")  # authoritative total from cua-driver
+        element_count = None
+        if "elements" in tree:
+            element_count = len(tree["elements"])
+        elif "element_count" in tree:
+            element_count = tree["element_count"]
+
         return {
             "pid": proc.pid,
             "window_id": wid,
@@ -140,22 +145,18 @@ class QcadVlmVerifier:
         }
 
     def _find_window_with_retry(self, timeout: int = 15) -> Optional[int]:
-        """Poll cua-driver list_windows for a QCAD window by title, not by PID.
-
-        QCAD launches via a bash wrapper script which is the parent of the
-        actual qcad-bin process that owns the window. Searching by PID would
-        miss the real window. Instead we search all windows for the title.
-        """
+        """Poll cua-driver list_windows until a QCAD window with the expected title appears."""
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            result = self._cua_call("list_windows", {})
+            if not self._pid:
+                return None
+            result = self._cua_call("list_windows", {"pid": self._pid})
             windows = result.get("windows", [])
             for w in windows:
                 title = w.get("title", "")
                 if self.window_title.lower() in title.lower():
                     wid = w.get("window_id")
                     self._window_id = wid
-                    self._pid = w.get("pid")  # update to real qcad-bin PID
                     self._window_dims = (w.get("width"), w.get("height"))
                     return wid
             time.sleep(0.5)

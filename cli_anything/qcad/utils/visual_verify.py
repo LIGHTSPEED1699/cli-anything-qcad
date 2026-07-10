@@ -44,6 +44,9 @@ class QcadRenderer:
         # dwg2bmp needs DWG input; convert DXF if necessary.
         orig = self._ensure_dwg(original_path, converter)
         mod = self._ensure_dwg(modified_path, converter)
+        for p in [original_path, modified_path]:
+            if not Path(p).stem:
+                raise ValueError(f"Path {p!r} has empty stem")
         orig_png = str(Path(original_path).with_suffix('')) + '_orig_render.png'
         mod_png = str(Path(modified_path).with_suffix('')) + '_mod_render.png'
         ok1 = self.render(orig, orig_png)

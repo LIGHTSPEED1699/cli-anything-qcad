@@ -1,24 +1,36 @@
 """Clone DXF entities inside cloud polygons to target terminal rows.
 
-Selects entities inside cloud polygon + bounded y-band supplement, assigns them
-to specific source rows by nearest text proximity, clones each to its matched
-target row once. EPAC texts, LEFT-side-only entities, and target-row entities
-are excluded.
-"""
+This engine combines cloud-based entity selection (like DeleteCloudedEntitiesEngine)
+with terminal-row clone logic (like CloneTerminalWiresEngine) into a single routine:
 
-import math, re
+1. Extract cloud polygon from PDF annotation (already mapped to DXF by planner).
+2. Select all entities inside the cloud polygon (wires, labels, arcs, etc.).
+3. Parse source/target terminal row numbers from annotation text.
+4. Compute dy offset from terminal row label positions in DXF.
+5. Clone matching entities with offset + text renames.
+6. Exclude terminal INSERT blocks (they already exist at target rows).
+7. Exclude terminal row labels like (4), (5) to avoid duplicate numbering.
+
+This is the first cloud-based duplication engine — the old VLM-CAD-automation repo
+attempted Variant C (cloud polygon selection) but failed due to coordinate mismatch
+(wrong 3.pdf).  With the correct PDF, this engine makes cloud-based clone work.
+"""
+import math
+import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 try:
     import ezdxf
-except ImportError as e:
+except ImportError as e:  # pragma: no cover
     raise ImportError("ezdxf is required") from e
+
 try:
     from matplotlib.path import Path as MplPath
-except ImportError as e:
+except ImportError as e:  # pragma: no cover
     raise ImportError("matplotlib is required") from e
 
+# Reuse entity-selection logic from delete_clouded_entities
 from cli_anything.qcad.engines.delete_clouded_entities import (
     _entity_inside_polygon,
     _entity_geometry_points,
@@ -32,17 +44,29 @@ from cli_anything.qcad.utils.terminal_positions import (
 )
 from cli_anything.qcad.utils.layer_fix import fix_layer_visibility
 
+# Block names that are terminal strip infrastructure — never clone these
+TERMINAL_BLOCK_NAMES = frozenset(["Wlterm1", "Wlltermn", "Wetermn1"])
+
 
 def _terminal_block_x(doc, row_nums: list) -> float | None:
+    """Find the x-position (right edge) of terminal block from terminal positions.
+
+    Uses Wlltermn ATTRIB (TERMNUM) lookup — the correct method.
+    """
     return _term_block_x(doc, row_nums)
 
 
 def _entity_right_of_line(ent, x_line: float) -> bool:
+    """Check if entity is to the right of a vertical line (x > x_line).
+    
+    Uses the entity's insertion point or first geometry point.
+    """
     etype = ent.dxftype()
     try:
         if etype in ("TEXT", "MTEXT"):
             return ent.dxf.insert.x > x_line
         elif etype == "LINE":
+            # Check both endpoints, entity is "right" if any point is right
             return ent.dxf.start.x > x_line or ent.dxf.end.x > x_line
         elif etype == "LWPOLYLINE":
             pts = list(ent.get_points("xy"))
@@ -52,39 +76,28 @@ def _entity_right_of_line(ent, x_line: float) -> bool:
         elif etype == "INSERT":
             return ent.dxf.insert.x > x_line
         else:
+            # Fallback: try get bounding box
             try:
                 bbox = ent.bbox()
                 return bbox.extmin.x > x_line if hasattr(bbox, 'extmin') else True
-            except Exception:
+            except:
                 return True
     except Exception:
         return True
 
 
-def _safe_saveas(doc, out_dxf: str) -> None:
-    materials = doc.materials
-    original_get = materials.get
-    def _safe_get(name):
-        result = original_get(name)
-        if isinstance(result, str):
-            class _DummyMat:
-                class dxf:
-                    handle = result
-            return _DummyMat()
-        return result
-    materials.get = _safe_get
-    try:
-        doc.saveas(out_dxf)
-    finally:
-        materials.get = original_get
 
+
+# --- Row parsing (shared with clone_terminal_wires) ---
 
 def _parse_row_list(s: str) -> List[int]:
+    """Extract small integers (likely terminal/wire row numbers) from a clause."""
     rows = []
     for m in re.finditer(r"\b(\d{1,3})\b", s):
         n = int(m.group(1))
         if n not in rows:
             rows.append(n)
+    # Detect explicit ranges like "4-6" or "4/6"
     for m in re.finditer(r"(\d{1,3})\s*[/-]\s*(\d{1,3})", s):
         a, b = int(m.group(1)), int(m.group(2))
         for n in range(a, b + 1):
@@ -95,6 +108,7 @@ def _parse_row_list(s: str) -> List[int]:
 
 
 def _extract_clone_clause(desc: str) -> Tuple[str, str]:
+    """Return (source_clause, target_clause) from a clone description."""
     desc = re.split(r"\s+(?:and|then|update|change)\s+", desc, flags=re.I)[0]
     matches = list(re.finditer(r"\bto\b", desc, re.I))
     if not matches:
@@ -135,6 +149,7 @@ def _entity_text(ent) -> str:
 
 
 def _is_terminal_label(ent) -> bool:
+    """Return True if entity is a terminal row label like (4), T4, etc."""
     if ent.dxftype() not in ("TEXT", "MTEXT"):
         return False
     txt = _entity_text(ent).strip()
@@ -146,47 +161,81 @@ def _is_terminal_label(ent) -> bool:
 
 
 def _parse_text_replacements(desc: str, params: Dict[str, Any]) -> Dict[str, str]:
-    tr = params.get("text_replacements", {})
-    if tr:
-        return tr
+    """Extract text rename mappings from parameters or annotation description.
+
+    Only matches meaningful identifiers (PLC, CA, cable numbers, etc.) —
+    not arbitrary words that happen to precede 'to'.
+    """
+    text_replacements = params.get("text_replacements", {})
+    if text_replacements:
+        return text_replacements
+
     nv = params.get("new_value", "") or desc
+
+    # Only match specific identifier patterns, not arbitrary words
+    # PLC21 → PLC22
     for m in re.finditer(r"\b(PLC\d+)\s*(?:to|→|->)\s*(PLC\d+)", nv, re.I):
         old, new = m.group(1), m.group(2)
         if old != new:
-            tr[old] = new
+            text_replacements[old] = new
+    # CA-1451 → CA-1452
     for m in re.finditer(r"\b(CA-?\w+)\s*(?:to|→|->)\s*(CA-?\w+)", nv, re.I):
         old, new = m.group(1), m.group(2)
         if old != new:
-            tr[old] = new
+            text_replacements[old] = new
+    # 5-digit cable numbers: 02732 → 02733
     for m in re.finditer(r"\b(\d{5})\s*(?:to|→|->)\s*(\d{5})\b", nv):
         old, new = m.group(1), m.group(2)
         if old != new:
-            tr[old] = new
+            text_replacements[old] = new
+    # DWG B-SAR-280-XXXXX pattern
     if "DWG B-SAR-280-" in nv:
         nums = re.findall(r"B-SAR-280-(\d+)", nv)
         if len(nums) == 2:
-            tr[f"027{nums[0]}"] = f"027{nums[1]}"
+            text_replacements[f"027{nums[0]}"] = f"027{nums[1]}"
+
+    # Also derive from source/target row numbers: labels like (4)→(7)
     src_rows = params.get("source_rows", [])
     tgt_rows = params.get("target_rows", [])
     for s, t in zip(src_rows, tgt_rows):
         if s != t:
-            tr[f"({s})"] = f"({t})"
-    return tr
+            text_replacements[f"({s})"] = f"({t})"
+
+    # Extract "as XXX" target values from annotation text.
+    # Pattern: "change related texts as PLC22, CA-1452, DWG B-SAR-280-02733"
+    # These are the TARGET values. The SOURCE values must be discovered from
+    # the DXF entities inside the cloud (e.g., PLC21, CA-1451, 02732).
+    # We pair them by extracting source values from DXF at runtime in the engine.
+    return text_replacements
 
 
 def _extract_target_text_values(desc: str) -> List[str]:
-    m = re.search(r"\bchange\s+related\s+texts?\s+as\s+([A-Z0-9\-,\. ]+?)(?:$|\.|\s+and\s+)", desc, re.I)
+    """Extract target text values from 'change related texts as X, Y, Z' clause.
+
+    Returns a list of target strings like ['PLC22', 'CA-1452', '02733'].
+    The source values (PLC21, CA-1451, 02732) are discovered from the DXF
+    entities inside the cloud at engine runtime.
+    """
+    # Look specifically for "as" followed by comma-separated identifier values.
+    # The annotation pattern is: "copy ... to ... and change related texts as PLC22, CA-1452, DWG B-SAR-280-02733"
+    m = re.search(r"\bchange\s+related\s+texts?\s+as\s+([A-Z0-9\-,\s\.]+?)(?:$|\.|\s+and\s+)",
+                  desc, re.I)
     if not m:
-        m = re.search(r"\btexts?\s+(?:as|to)\s+([A-Z][A-Z0-9\-,\. ]+?)(?:$|\.|\s+and\s+)", desc, re.I)
+        # Fallback: look for "texts as" or "texts to" followed by values
+        m = re.search(r"\btexts?\s+(?:as|to)\s+([A-Z][A-Z0-9\-,\s\.]+?)(?:$|\.|\s+and\s+)",
+                      desc, re.I)
     if not m:
         return []
     clause = m.group(1).strip()
+    # Split by comma, clean up
     values = [v.strip() for v in clause.split(",")]
+    # Extract meaningful identifiers
     result = []
     for v in values:
         v = v.strip()
         if not v:
             continue
+        # Extract trailing 5-digit number from "DWG B-SAR-280-02733" → "02733"
         m2 = re.search(r"(\d{5})$", v)
         if m2:
             result.append(m2.group(1))
@@ -195,24 +244,42 @@ def _extract_target_text_values(desc: str) -> List[str]:
     return result
 
 
-def _discover_source_texts(doc, polygon, source_rows=None):
+def _discover_source_texts(doc, polygon: List[Tuple[float, float]],
+                          source_rows: List[int] = None) -> Dict[str, str]:
+    """Scan entities inside the cloud polygon and extract identifiable text values.
+
+    Also searches the y-band of source terminal rows if the cloud polygon
+    doesn't contain PLC/CA/cable texts (the cloud may only cover the wire
+    connection area, not the cable reference labels further away).
+
+    Returns a dict mapping text type → source value, e.g.:
+        {"PLC": "PLC21", "CA": "CA-1451", "CABLE": "02732"}
+    """
     from cli_anything.qcad.engines.delete_clouded_entities import _entity_inside_polygon
     msp = doc.modelspace()
     result = {}
+
+    # First pass: search inside the cloud polygon
     for ent in msp:
         if ent.dxftype() not in ("TEXT", "MTEXT", "ATTRIB"):
             continue
         if not _entity_inside_polygon(ent, polygon):
             continue
         _try_match_text(_entity_text(ent).strip(), result)
+
+    # If we found PLC, CA, and CABLE, we're done
     if len(result) >= 3:
         return result
+
+    # Second pass: search in the y-band of source rows
+    # The cloud may only cover the wire area, not the cable reference labels
     if source_rows:
+        # Compute y-band from source row labels
         y_min, y_max = float('inf'), float('-inf')
         for row_num in source_rows:
             y = _row_y_center(doc, row_num)
             if y is not None:
-                y_min = min(y_min, y - 1.5)
+                y_min = min(y_min, y - 1.5)  # expand to catch nearby cable refs
                 y_max = max(y_max, y + 1.5)
         if y_min < y_max:
             for ent in msp:
@@ -222,58 +289,55 @@ def _discover_source_texts(doc, polygon, source_rows=None):
                 if y < y_min or y > y_max:
                     continue
                 _try_match_text(_entity_text(ent).strip(), result)
+
     return result
 
 
 def _try_match_text(txt: str, result: Dict[str, str]) -> None:
+    """Try to match a text string against known patterns and add to result."""
     if not txt:
         return
+    # PLC pattern
     m = re.match(r"^(PLC\d+)", txt, re.I)
     if m and "PLC" not in result:
         result["PLC"] = m.group(1)
         return
+    # CA pattern
     m = re.match(r"^(CA-?\w+)", txt, re.I)
     if m and "CA" not in result:
         result["CA"] = m.group(1)
         return
+    # 5-digit cable number
     m = re.search(r"(\d{5})", txt)
     if m and "CABLE" not in result:
         result["CABLE"] = m.group(1)
-
-
-def _is_left_only(ent) -> bool:
-    """True if entity is entirely on the left side (all sample points x < 15.0).
-    This catches terminal pin arcs (x=14.375) and left-side-only text."""
-    pts = _entity_geometry_points(ent)
-    if not pts:
-        return True
-    return all(p[0] < 15.0 for p in pts)
-
-
-# Block names that are terminal strip infrastructure — never clone these
-TERMINAL_BLOCK_NAMES = frozenset(["Wlterm1", "Wlltermn", "Wetermn1"])
+        return
 
 
 def _copy_entity(msp, ent, dy: float, text_replacements: Dict[str, str],
                  skip_insert: bool = True) -> Optional[Any]:
+    """Deep-copy an entity, translate by dy, apply text replacements.
+
+    Args:
+        skip_insert: if True, skip INSERT (block reference) entities to avoid
+                      duplicating terminal blocks that already exist at target rows.
+    """
     etype = ent.dxftype()
     doc = msp.doc
+
     if skip_insert and etype == "INSERT":
         # Skip terminal block INSERTs but allow other blocks (WFEND, WECOIL, etc.)
         if ent.dxf.name in TERMINAL_BLOCK_NAMES:
             return None
-        # Also skip INSERTs with ATTRIBs (terminal blocks with number attributes)
         if hasattr(ent, "attribs") and ent.attribs:
             return None
         # Non-terminal INSERTs (WFEND, WECOIL) — clone them
         pass
+
+    # Skip terminal row labels to avoid duplicate numbering at destination
     if _is_terminal_label(ent):
         return None
-    txt = _entity_text(ent).strip()
-    if txt.startswith("EPAC"):
-        return None
-    if _is_left_only(ent):
-        return None
+
     try:
         new = doc.entitydb.duplicate_entity(ent)
     except Exception:
@@ -281,12 +345,17 @@ def _copy_entity(msp, ent, dy: float, text_replacements: Dict[str, str],
             new = ent.copy()
         except Exception:
             return None
+
     if new is None:
         return None
+
+    # Translate geometry
     try:
         new.translate(0, dy, 0)
     except Exception:
         pass
+
+    # Apply text replacements
     txt = _entity_text(new)
     if txt:
         for old, new_val in text_replacements.items():
@@ -297,6 +366,8 @@ def _copy_entity(msp, ent, dy: float, text_replacements: Dict[str, str],
                 elif new.dxftype() == "MTEXT":
                     new.text = new_txt
                 break
+
+    # Ensure new handle and add to modelspace
     try:
         new.dxf.handle = None
         doc.entitydb.add(new)
@@ -307,213 +378,160 @@ def _copy_entity(msp, ent, dy: float, text_replacements: Dict[str, str],
 
 
 class CloudCloneEngine:
-    def run(self, dxf_path: str, parameters: Dict[str, Any], out_dxf: str) -> Dict[str, Any]:
+    """Clone all entities inside cloud polygons to target terminal rows.
+
+    Uses the same polygon-based entity selection as DeleteCloudedEntitiesEngine,
+    but instead of deleting, clones the selected entities with a y-offset
+    derived from source/target terminal row positions.
+
+    Parameters (in task.parameters or task.dxf_region):
+        - regions: list of {type: "polygon", verts: [(x,y),...], bbox: (xmin,xmax,ymin,ymax)}
+          (same format as DeleteCloudedEntitiesEngine)
+        - source_rows: [4, 5, 6]  (terminal row numbers inside the cloud)
+        - target_rows: [7, 8, 9]  (destination terminal rows)
+        - text_replacements: {"PLC21": "PLC22", ...}
+        - target_description: "copy wires connected to 4, 5, 6 to 7, 8, 9"
+          (used to infer source/target rows if not provided)
+
+    If source_rows/target_rows are not provided, they are inferred from
+    target_description or the annotation text.
+    """
+
+    def run(self, dxf_path: str, parameters: Dict[str, Any],
+            out_dxf: str) -> Dict[str, Any]:
         regions = parameters.get("regions", [])
         if isinstance(regions, dict):
             regions = [regions]
-        if not regions:
-            return {"engine": "cloud_clone", "success": False, "error": "no regions"}
 
+        if not regions:
+            return {"engine": "cloud_clone", "success": False,
+                    "error": "no cloud regions provided"}
+
+        # Parse source/target rows
         source_rows = parameters.get("source_rows", [])
         target_rows = parameters.get("target_rows", [])
         if not source_rows or not target_rows:
             desc = parameters.get("target_description", "") or parameters.get("text", "")
             source_rows, target_rows = _infer_rows_from_description(desc)
+
         if not source_rows or not target_rows:
             return {"engine": "cloud_clone", "success": False,
-                    "error": f"cannot infer rows from: {parameters.get('text','(empty)')}"}
+                    "error": f"cannot infer source/target rows from: {desc or '(empty)'}"}
+
         if len(source_rows) != len(target_rows):
             return {"engine": "cloud_clone", "success": False,
-                    "error": f"source/target row count mismatch"}
+                    "error": f"source_rows {source_rows} and target_rows {target_rows} must have same length"}
 
+        # Parse text replacements
         text_replacements = _parse_text_replacements(
-            parameters.get("text", ""), {**parameters, "source_rows": source_rows, "target_rows": target_rows})
+            parameters.get("text", ""), {**parameters,
+                                         "source_rows": source_rows,
+                                         "target_rows": target_rows})
 
         doc = ezdxf.readfile(dxf_path)
         msp = doc.modelspace()
 
-        # Compute dy offsets
+        # Compute dy offsets from terminal row positions
         dy_per_pair = []
-        for sn, tn in zip(source_rows, target_rows):
-            sy = _row_y_center(doc, sn)
-            ty = _row_y_center(doc, tn)
-            if sy is None or ty is None:
+        for src_num, tgt_num in zip(source_rows, target_rows):
+            src_y = _row_y_center(doc, src_num)
+            tgt_y = _row_y_center(doc, tgt_num)
+            if src_y is None or tgt_y is None:
                 return {"engine": "cloud_clone", "success": False,
-                        "error": f"cannot find row ({sn}) or ({tn})"}
-            dy_per_pair.append(ty - sy)
+                        "error": f"cannot find terminal row labels ({src_num}) or ({tgt_num}) in DXF"}
+            dy_per_pair.append(tgt_y - src_y)
 
-        # Build polygon
-        source_polygon = []
+        # Use the first cloud region as the source selection polygon.
+        # All regions should cover the same source area (rows 4,5,6).
+        # If multiple regions exist, merge them into one selection polygon.
+        source_polygon: List[Tuple[float, float]] = []
         for region in regions:
             verts = region.get("verts", [])
             if len(verts) >= 3:
                 source_polygon.extend(verts)
+
         if not source_polygon:
+            # Fallback: use bbox-based rectangle
             for region in regions:
                 bbox = region.get("bbox") or region.get("coords")
                 if bbox and len(bbox) == 4:
-                    source_polygon = [(bbox[0], bbox[2]), (bbox[1], bbox[2]),
-                                      (bbox[1], bbox[3]), (bbox[0], bbox[3])]
+                    xmin, xmax, ymin, ymax = bbox
+                    source_polygon = [(xmin, ymin), (xmax, ymin),
+                                      (xmax, ymax), (xmin, ymax)]
                     break
-        if len(source_polygon) < 3:
-            return {"engine": "cloud_clone", "success": False, "error": "insufficient polygon"}
 
-        # Discover text values
+        if len(source_polygon) < 3:
+            return {"engine": "cloud_clone", "success": False,
+                    "error": "cloud polygon has insufficient vertices"}
+
+        # Discover source text values from DXF entities inside the cloud
+        # and pair them with target values from the annotation text.
         source_texts = _discover_source_texts(doc, source_polygon, source_rows)
         target_values = _extract_target_text_values(
             parameters.get("text", "") or parameters.get("target_description", ""))
+
+        # Build text replacements from source→target pairing
+        # Map by type: PLC→PLC, CA→CA, CABLE→CABLE
+        type_order = ["PLC", "CA", "CABLE"]
         for i, tv in enumerate(target_values):
-            if i < 3 and ["PLC", "CA", "CABLE"][i] in source_texts:
-                sv = source_texts[["PLC", "CA", "CABLE"][i]]
-                if sv != tv:
-                    text_replacements[sv] = tv
+            if i < len(type_order) and type_order[i] in source_texts:
+                src_val = source_texts[type_order[i]]
+                if src_val != tv:
+                    text_replacements[src_val] = tv
 
-        # === SELECTION ===
+        # Select entities inside the cloud polygon
         selected_entities = []
-        seen_handles = set()
-
-        row_centers_map = {r: _row_y_center(doc, r) for r in source_rows}
-        row_centers_map = {r: y for r, y in row_centers_map.items() if y is not None}
-        if not row_centers_map:
-            return {"engine": "cloud_clone", "success": False, "error": "no source row centers"}
-
-        src_vals = sorted(row_centers_map.values())
-        half_sp = max(abs(src_vals[1] - src_vals[0]) / 2.0 if len(src_vals) > 1 else 0.25, 0.12)
-        sup_y_min = min(src_vals) - half_sp
-        sup_y_max = max(src_vals) + half_sp
-        terminal_x = _terminal_block_x(doc, source_rows)
-        x_bound = (terminal_x + 0.2) if terminal_x is not None else float("-inf")
-
         for ent in list(msp):
             if _is_terminal_label(ent):
-                continue
-            # Skip terminal block INSERTs but allow non-terminal blocks (WFEND, WECOIL)
+                continue  # Skip row labels like (4), (5)
             if ent.dxftype() == "INSERT":
+                # Skip terminal block INSERTs but allow non-terminal blocks (WFEND, WECOIL)
                 if ent.dxf.name in TERMINAL_BLOCK_NAMES:
                     continue
                 if hasattr(ent, "attribs") and ent.attribs:
                     continue
-            pts = _entity_geometry_points(ent)
-            if not pts:
-                continue
-            handle = ent.dxf.handle if hasattr(ent.dxf, 'handle') else id(ent)
-            if handle in seen_handles:
-                continue
-            in_cloud = _entity_inside_polygon(ent, source_polygon)
-            in_sup = (any(sup_y_min <= p[1] <= sup_y_max for p in pts) and
-                      (terminal_x is None or _entity_right_of_line(ent, x_bound)))
-            if in_cloud or in_sup:
+            if _entity_inside_polygon(ent, source_polygon):
                 selected_entities.append(ent)
-                seen_handles.add(handle)
 
-        print(f"[cloud_clone] selected {len(selected_entities)}")
+
+        # --- SIDE FILTER: only select entities on the wire side ---
+        # The cloud polygon from PDF may be mapped too wide and catch entities
+        # on both sides of the terminal block. Filter to only the wire side
+        # (right side of terminal block in standard orientation).
+        terminal_x = _terminal_block_x(doc, source_rows)
+        if terminal_x is not None:
+            # Margin: 0.2 DXF units to the right of terminal label edge
+            x_boundary = terminal_x + 0.2
+            before_count = len(selected_entities)
+            selected_entities = [
+                ent for ent in selected_entities
+                if _entity_right_of_line(ent, x_boundary)
+            ]
+            filtered_count = before_count - len(selected_entities)
+            if filtered_count > 0:
+                print(f"[cloud_clone] Side filter removed {filtered_count} entities left of x={x_boundary:.3f}")
+
         if not selected_entities:
-            return {"engine": "cloud_clone", "success": False, "error": "no entities found"}
+            return {"engine": "cloud_clone", "success": False,
+                    "error": "no entities found inside cloud polygon",
+                    "polygon_vertex_count": len(source_polygon)}
 
-        # === ROW ASSIGNMENT (text by content + fallback; geometry by nearest text) ===
-        text_by_row: Dict[int, list] = {r: [] for r in source_rows}
-
-        # Step 1: TEXT assignment
-        for ent in selected_entities:
-            if ent.dxftype() not in ("TEXT", "MTEXT"):
-                continue
-            txt = _entity_text(ent) or ""
-            assigned = False
-            for src_row in source_rows:
-                if f" G1 {src_row + 10:02d}" in txt or f" G1 {src_row + 10:d}" in txt:
-                    try:
-                        ent_y = ent.dxf.insert.y
-                        src_y = _row_y_center(doc, src_row)
-                        if src_y is not None and abs(ent_y - src_y) <= 0.35:
-                            text_by_row[src_row].append(ent)
-                            assigned = True
-                            break
-                    except Exception:
-                        text_by_row[src_row].append(ent)
-                        assigned = True
-                        break
-                elif f"({src_row})" in txt:
-                    text_by_row[src_row].append(ent)
-                    assigned = True
-                    break
-            if not assigned:
-                try:
-                    ent_y = ent.dxf.insert.y
-                except Exception:
-                    continue
-                nearest = min(source_rows, key=lambda r: abs(_row_y_center(doc, r) or 0 - ent_y))
-                nd = abs((_row_y_center(doc, nearest) or 0) - ent_y)
-                if nd <= half_sp * 3:
-                    text_by_row[nearest].append(ent)
-
-        # Step 2: Geometry assignment by nearest text proximity
-        row_entities: Dict[int, list] = {r: [] for r in source_rows}
-        for ent in selected_entities:
-            if ent.dxftype() in ("TEXT", "MTEXT"):
-                continue
-            pts = _entity_geometry_points(ent)
-            if not pts:
-                continue
-            ent_y = sum(p[1] for p in pts) / len(pts)
-            nr, nd = None, float('inf')
-            for src_row, texts in text_by_row.items():
-                for te in texts:
-                    try:
-                        ty = te.dxf.insert.y
-                    except Exception:
-                        continue
-                    d = abs(ty - ent_y)
-                    if d < nd:
-                        nd = d
-                        nr = src_row
-            if nr is not None:
-                row_entities[nr].append(ent)
-
-        # Merge texts into row_entities
-        for r in source_rows:
-            row_entities[r].extend(text_by_row[r])
-
-        for r in sorted(source_rows):
-            print(f"[cloud_clone] row {r}: {len(row_entities[r])} entities")
-
-        # === TARGET ROW BANDS (for exclusion) ===
-        tgt_half = max(abs(_row_y_center(doc, target_rows[1]) - _row_y_center(doc, target_rows[0])) / 2.0
-                       if len(target_rows) > 1 else 0.25, 0.15)
-        target_bands = {}
-        for r in target_rows:
-            yc = _row_y_center(doc, r)
-            if yc is not None:
-                target_bands[r] = (yc - tgt_half, yc + tgt_half)
-
-        # === CLONE (one clone per entity, to its assigned row) ===
-        row_to_dy = {source_rows[i]: dy_per_pair[i] for i in range(len(source_rows))}
-        row_to_target = {source_rows[i]: target_rows[i] for i in range(len(source_rows))}
+        # Clone each selected entity to each target row
         cloned = 0
         clone_details = []
-        for src_row, ents in row_entities.items():
-            if not ents:
-                continue
-            dy = row_to_dy[src_row]
-            tgt_row = row_to_target[src_row]
-            for ent in ents:
-                # Check target band exclusion
-                pts = _entity_geometry_points(ent)
-                if pts:
-                    avg_y = sum(p[1] for p in pts) / len(pts)
-                    if any(low <= avg_y <= high for low, high in target_bands.values()):
-                        continue
+        for ent in selected_entities:
+            etype = ent.dxftype()
+            for dy in dy_per_pair:
                 new_ent = _copy_entity(msp, ent, dy, text_replacements, skip_insert=True)
                 if new_ent is not None:
                     cloned += 1
                     clone_details.append({
-                        "type": ent.dxftype(),
-                        "src_row": src_row,
-                        "tgt_row": tgt_row,
+                        "type": etype,
                         "dy": round(dy, 4),
                         "text": _entity_text(ent)[:50] if _entity_text(ent) else "",
                     })
 
-        _safe_saveas(doc, out_dxf)
+        doc.saveas(out_dxf)
         # Fix layer visibility: flip negative colors to positive (layers ON)
         fixed_dxf = out_dxf + ".fixed.dxf"
         fix_layer_visibility(out_dxf, fixed_dxf)
@@ -527,7 +545,7 @@ class CloudCloneEngine:
             "text_replacements": text_replacements,
             "source_entities_selected": len(selected_entities),
             "cloned": cloned,
-            "clone_details": clone_details[:20],
+            "clone_details": clone_details[:20],  # cap for report
             "polygon_vertex_count": len(source_polygon),
             "output_dxf": out_dxf,
         }

@@ -36,7 +36,7 @@ class MarkupPipeline:
         "change_text_value": ChangeTextValueEngine,
         "add_text_label": AddTextLabelEngine,
         "clone_terminal_wires": CloneTerminalWiresEngine,
-        "cloud_clone": TextBasedCloneEngine,
+        "cloud_clone": CloudCloneEngine,
         "text_based_clone": TextBasedCloneEngine,
         "resize_bounding_box": ResizeBoundingBoxEngine,
         "mark_spare_wires": MarkSpareWiresEngine,

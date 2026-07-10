@@ -71,11 +71,22 @@ class DwgConverter:
     def _oda_dwg_to_dxf(self, dwg_path: str, dxf_path: str) -> bool:
         input_dir = Path(dwg_path).parent
         output_dir = Path(dxf_path).parent
+        # ODA File Converter operates on entire directories — ensure we don't
+        # pass root directories or paths without a parent to avoid processing
+        # unintended files or producing ".dxf" with empty basename.
+        if not dwg_path.strip() or not Path(dwg_path).name:
+            raise ValueError(f"Invalid dwg_path: {dwg_path!r}")
+        if not dxf_path.strip():
+            raise ValueError(f"Invalid dxf_path: {dxf_path!r}")
+        # Guard: Path.stem returns empty string for '.'-prefixed filenames
+        src_stem = Path(dwg_path).stem
+        if not src_stem:
+            raise ValueError(f"dwg_path {dwg_path!r} has empty stem (name starts with dot?)")
         subprocess.run(
             [self.oda_converter, str(input_dir), str(output_dir), self.version, "DXF", "0", "1"],
             check=True, capture_output=True, text=True,
         )
-        generated = output_dir / (Path(dwg_path).stem + ".dxf")
+        generated = output_dir / f"{src_stem}.dxf"
         if generated.exists():
             generated.rename(dxf_path)
             return True
@@ -84,11 +95,16 @@ class DwgConverter:
     def _oda_dxf_to_dwg(self, dxf_path: str, dwg_path: str) -> bool:
         input_dir = Path(dxf_path).parent
         output_dir = Path(dwg_path).parent
+        if not dxf_path.strip() or not Path(dxf_path).name:
+            raise ValueError(f"Invalid dxf_path: {dxf_path!r}")
+        src_stem = Path(dxf_path).stem
+        if not src_stem:
+            raise ValueError(f"dxf_path {dxf_path!r} has empty stem (name starts with dot?)")
         subprocess.run(
             [self.oda_converter, str(input_dir), str(output_dir), self.version, "DWG", "0", "1"],
             check=True, capture_output=True, text=True,
         )
-        generated = output_dir / (Path(dxf_path).stem + ".dwg")
+        generated = output_dir / f"{src_stem}.dwg"
         if generated.exists():
             generated.rename(dwg_path)
             return True
@@ -117,10 +133,31 @@ class DwgConverter:
             result = subprocess.run(cmd, capture_output=True, text=True, env=env)
             return result.returncode == 0 and Path(dwg_path).exists()
 
-        # Fallback to inline script if ECMA file missing
+        # Fallback to inline script if ECMA file missing.
+        # Includes layer-ON forcing to prevent ODA DWG writer from turning
+        # layers OFF (negative colors), which makes cloned entities invisible.
         safe_dxf = dxf_path.replace("'", "\\'")
         safe_dwg = dwg_path.replace("'", "\\'")
-        script = f"""include(\"scripts/library.js\"); var storage = new RMemoryStorage(); var spatialIndex = new RSpatialIndexSimple(); var doc = new RDocument(storage, spatialIndex); var di = new RDocumentInterface(doc); var r1 = di.importFile('{safe_dxf}'); if (r1 !== RDocumentInterface.IoErrorNoError) {{ qcad.quit(1); }} di.exportFile('{safe_dwg}', 'R32 (2018) DWG'); QCoreApplication.quit(0);"""
+        script = (
+            'include("scripts/library.js"); '
+            'var storage = new RMemoryStorage(); '
+            'var spatialIndex = new RSpatialIndexSimple(); '
+            'var doc = new RDocument(storage, spatialIndex); '
+            'var di = new RDocumentInterface(doc); '
+            f"var r1 = di.importFile('{safe_dxf}'); "
+            'if (r1 !== RDocumentInterface.IoErrorNoError) { qcad.quit(1); } '
+            'var lids = doc.queryAllLayers(); '
+            'var lop = new RModifyObjectsOperation(); '
+            'var lf = 0; '
+            'for (var k = 0; k < lids.length; k++) { '
+            '  var l = doc.queryLayer(lids[k]); if (!l) continue; '
+            '  if (l.isOff()) { l.setOff(false); lop.addObject(l, false); lf++; } '
+            '  if (l.isFrozen()) { l.setFrozen(false); lop.addObject(l, false); lf++; } '
+            '} '
+            'if (lf > 0) { di.applyOperation(lop); } '
+            f"di.exportFile('{safe_dwg}', 'R32 (2018) DWG'); "
+            'QCoreApplication.quit(0);'
+        )
         return self._run_qcad_script(script)
 
     def _run_qcad_script(self, script: str) -> bool:
