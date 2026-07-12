@@ -79,6 +79,47 @@ cli-anything-qcad verify output.dwg --question "Are the cloned terminal labels c
 cli-anything-qcad apply drawing.dwg markup.pdf -o drawing_modified.dwg --per-task-vlm
 ```
 
+## Recent Changes (July 2026)
+
+### Drawing Profile Auto-Discovery (`c08411c`)
+
+The pipeline is no longer tied to specific drawing conventions. A new `DrawingProfile` introspection module (`utils/drawing_profile.py`) automatically discovers a DXF's structure before any engine runs:
+
+| Discovery | What it finds | Example (Pair 5) |
+|-----------|--------------|-------------------|
+| **Drawing extents** | Bounding box from all geometry + ATTRIB positions | `(-0.12, 33.67, 0, 17.69)` |
+| **Revision table** | INSERT block with REV-tagged ATTRIBs, naming convention, subfield tags | `PLAINS-D-CAN`, `REV_{n}`, `REV_DATE_{n}` |
+| **Terminal blocks** | Blocks with sequential integer ATTRIBs at uniform Y-spacing | `Wlltermn`/`TERMNUM`, 36 terminals, 0.25 spacing |
+| **Protected blocks** | Terminal blocks + `GROUND`/`GND` | Automatically preserved during deletion |
+
+**Engines updated to use the profile** (falling back to hardcoded defaults when discovery fails):
+
+- `text_value.py` — revision row filler discovers block name, tag pattern, and subfield tags from profile
+- `terminal_positions.py` — discovers terminal block names and ATTRIB tag instead of hardcoded `Wlltermn`/`TERMNUM`
+- `delete_clouded_entities.py` — receives protected block names from profile via `MarkupPipeline`
+- `vlm_verify_loop.py` — crop coordinate mapping uses actual drawing extents, not hardcoded `(0, 34, 0, 22)`
+- `markup_pipeline.py` — generates profile after DWG→DXF and passes to every engine
+
+**Verified on 3 drawings with different conventions:**
+- Pair 1: `ATBASEB` block, `REV{n}` pattern (no date/descr subfields), no terminals
+- Pair 3: No revision table found, `Wlltermn` terminals (36 count, 0.25 spacing)
+- Pair 5: `PLAINS-D-CAN` block, `REV_{n}` pattern (full subfields), no terminals
+
+### Screenshot Capture Fix (`b24a99e`)
+
+The VLM verification loop's screenshot path had three bugs that caused it to silently fall back to DXF-only verification:
+
+1. **Wrong window title search** — `xdotool` searched for `"modified"` in the window title; QCAD's title is `<filename>.dwg - QCAD Professional` which never contains "modified". Fixed: search for `"QCAD"`.
+2. **Non-existent cua-driver tool** — `visual_verifier.py` called `cua-driver call screenshot`, which doesn't exist in cua-driver 0.7.0. Removed.
+3. **cua-driver `get_window_state` hangs on QCAD AT-SPI tree** — QCAD publishes a massive accessibility tree with thousands of broken paths, causing cua-driver to timeout. Reordered to try `xdotool` + ImageMagick `import` first (fast, reliable on Qt6), with cua-driver as a last resort with a 10s timeout.
+
+### VLM Evaluation Fixes (`eedfcca`)
+
+- Fixed `CheckResult` constructor missing required `passed` argument
+- Revision table crop now centers on the actual annotation region (from DXF coordinates) instead of a hardcoded position
+- VLM evaluation splits compound expected values like `"B, 2026/07/10"` on comma and checks each part independently, since VLMs report revision fields in separate columns
+- Crop fallback guard for inverted rectangles when crop center falls outside drawing extents
+
 ## Dependencies
 
 - Python 3.10+
