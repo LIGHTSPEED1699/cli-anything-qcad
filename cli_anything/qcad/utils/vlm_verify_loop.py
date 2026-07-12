@@ -184,12 +184,20 @@ def build_checks_from_tasks(tasks: List[Any], dxf_path: str) -> List[Verificatio
                 "can see, including revision letters, dates, and descriptions. "
                 "How many revision rows are filled in?"
             )
+            # Use task DXF region center for crop, not a hardcoded location
+            region = task.get("dxf_region", {})
+            verts = region.get("verts", [])
+            if verts:
+                cx = sum(v[0] for v in verts) / len(verts)
+                cy = sum(v[1] for v in verts) / len(verts)
+            else:
+                cx, cy = 14.0, 1.0
             checks.append(VerificationCheck(
                 task_id=tid,
                 task_type=ttype,
                 question=question,
-                crop_center=(14.0, 1.0),  # typical revision table location
-                crop_size=8.0,
+                crop_center=(cx, cy),
+                crop_size=5.0,
                 expect_present=[new_val] if new_val else [],
             ))
 
@@ -355,7 +363,14 @@ def evaluate_check(
 
     # Check for present keywords (added text)
     if check.expect_present:
-        missing = [kw for kw in check.expect_present if kw.upper() not in answer_upper]
+        missing = []
+        for kw in check.expect_present:
+            # Handle compound values like "B, 2026/07/10" — VLM may report
+            # fields separately ("B" and "2026/07/10") not as one string
+            parts = [p.strip() for p in kw.split(",")]
+            for part in parts:
+                if part and part.upper() not in answer_upper:
+                    missing.append(part)
         if missing:
             result.passed = False
             result.error = f"Expected present but missing: {missing}"
@@ -670,7 +685,7 @@ def run_vlm_verify_loop(
                         check.crop_size,
                         crop_path,
                     )
-                    check_result = CheckResult(check=check, crop_path=crop_path)
+                    check_result = CheckResult(check=check, passed=None, crop_path=crop_path)
 
                     print(f"\n  VLM Q: {check.task_id} ({check.task_type})...", flush=True)
                     answer = query_vlm(
