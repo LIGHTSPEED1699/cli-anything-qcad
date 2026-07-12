@@ -93,7 +93,7 @@ class QcadVlmVerifier:
         self._window_id = None
         self._window_dims = None
 
-    def launch(self, filepath: str = None, wait_seconds: int = 5) -> Dict:
+    def launch(self, filepath: str = None, wait_seconds: int = 10) -> Dict:
         """Launch QCAD with AT-SPI bridge activated and find its window via cua-driver.
 
         Returns dict with pid, window_id, width, height, elements (number of
@@ -144,13 +144,16 @@ class QcadVlmVerifier:
             "atspi_ok": element_count is not None and element_count > 10,
         }
 
-    def _find_window_with_retry(self, timeout: int = 15) -> Optional[int]:
-        """Poll cua-driver list_windows until a QCAD window with the expected title appears."""
+    def _find_window_with_retry(self, timeout: int = 30) -> Optional[int]:
+        """Poll cua-driver list_windows until a QCAD window with the expected title appears.
+        
+        Note: the 'qcad' launcher script forks 'qcad-bin' with a different PID,
+        so we search ALL windows (not filtered by PID) and match by title only.
+        """
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            if not self._pid:
-                return None
-            result = self._cua_call("list_windows", {"pid": self._pid})
+            # Don't filter by pid — qcad wrapper forks qcad-bin with a different pid
+            result = self._cua_call("list_windows", {})
             windows = result.get("windows", [])
             for w in windows:
                 title = w.get("title", "")
@@ -158,6 +161,8 @@ class QcadVlmVerifier:
                     wid = w.get("window_id")
                     self._window_id = wid
                     self._window_dims = (w.get("width"), w.get("height"))
+                    # Update self._pid to the actual qcad-bin pid
+                    self._pid = w.get("pid", self._pid)
                     return wid
             time.sleep(0.5)
         return None
@@ -165,58 +170,45 @@ class QcadVlmVerifier:
     # ── screenshot ───────────────────────────────────────────
 
     def screenshot(self, label: str = "") -> str:
-        """Capture QCAD window via cua-driver get_window_state with screenshot.
+        """Capture QCAD window screenshot.
 
-        Prefers cua-driver's built-in screenshot (no focus steal, background).
-        Falls back to ImageMagick import if cua-driver fails.
+        Tries xdotool+ImageMagick import first (fast, reliable on Qt6).
+        Falls back to cua-driver get_window_state with a short timeout.
         """
         self._step += 1
         filename = self.screenshot_dir / f"step_{self._step:02d}_{label}.png"
 
-        # Method 1: cua-driver screenshot (background, no focus steal)
+        # Method 1: xdotool search + ImageMagick import (works reliably on Qt6)
+        try:
+            xid_result = subprocess.run(
+                ["xdotool", "search", "--onlyvisible", "--name", self.window_title],
+                capture_output=True, text=True, timeout=5,
+            )
+            if xid_result.returncode == 0 and xid_result.stdout.strip():
+                # Use the last matching window ID (QCAD has multiple X11 windows;
+                # the main one with the drawing is typically the last)
+                xid = xid_result.stdout.strip().split("\n")[-1]
+                result = subprocess.run(
+                    ["import", "-window", xid, str(filename)],
+                    capture_output=True, text=True, timeout=15,
+                )
+                if result.returncode == 0 and filename.exists() and filename.stat().st_size > 1000:
+                    return str(filename)
+        except Exception:
+            pass
+
+        # Method 2: cua-driver get_window_state with screenshot (has hung on QCAD's
+        # massive AT-SPI tree in the past, so use a short timeout as last resort)
         if self._pid and self._window_id:
             try:
                 result = subprocess.run(
                     ["cua-driver", "call", "get_window_state",
                      json.dumps({"pid": self._pid, "window_id": self._window_id,
                                  "screenshot_out_file": str(filename)})],
-                    capture_output=True, text=True, timeout=15,
+                    capture_output=True, text=True, timeout=10,
                 )
                 if result.returncode == 0 and filename.exists() and filename.stat().st_size > 1000:
                     return str(filename)
-            except Exception:
-                pass
-
-        # Method 2: cua-driver screenshot tool (different API)
-        if self._pid and self._window_id:
-            try:
-                result = subprocess.run(
-                    ["cua-driver", "call", "screenshot",
-                     json.dumps({"pid": self._pid, "window_id": self._window_id,
-                                 "path": str(filename)})],
-                    capture_output=True, text=True, timeout=15,
-                )
-                if result.returncode == 0 and filename.exists() and filename.stat().st_size > 1000:
-                    return str(filename)
-            except Exception:
-                pass
-
-        # Method 3: ImageMagick import with cua-driver discovered window_id
-        if self._window_id:
-            try:
-                # xdotool to get X11 window id (cua-driver window_id may differ)
-                xid_result = subprocess.run(
-                    ["xdotool", "search", "--onlyvisible", "--name", self.window_title],
-                    capture_output=True, text=True, timeout=5,
-                )
-                if xid_result.returncode == 0 and xid_result.stdout.strip():
-                    xid = xid_result.stdout.strip().split("\n")[0]
-                    result = subprocess.run(
-                        ["import", "-window", xid, str(filename)],
-                        capture_output=True, text=True, timeout=10,
-                    )
-                    if result.returncode == 0 and filename.exists():
-                        return str(filename)
             except Exception:
                 pass
 
