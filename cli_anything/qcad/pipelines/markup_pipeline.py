@@ -113,6 +113,10 @@ class MarkupPipeline:
         }
         tasks.sort(key=lambda t: (order.get(t.task_type, 5), t.task_id))
 
+        # Generate drawing profile for auto-discovery
+        from cli_anything.qcad.utils.drawing_profile import DrawingProfile
+        profile = DrawingProfile.from_dxf(str(original_dxf))
+
         # Execute tasks with checkpoints
         current_dxf = str(original_dxf)
         task_reports: List[Dict[str, Any]] = []
@@ -121,7 +125,8 @@ class MarkupPipeline:
 
         for task in tasks:
             next_dxf = str(work / f"checkpoint_{task.task_id}.dxf")
-            report, attempt = self._execute_task_with_retry(current_dxf, task, next_dxf)
+            report, attempt = self._execute_task_with_retry(
+                current_dxf, task, next_dxf, profile=profile)
             task_reports.append(report)
 
             if report.get("success") and self.per_task_verify and self.verifier and not skip_vlm:
@@ -176,15 +181,23 @@ class MarkupPipeline:
         return report_data
 
     def _execute_task(self, input_dxf: str, task: Task, output_dxf: str,
-                        params_override: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+                        params_override: Optional[Dict[str, Any]] = None,
+                        profile=None) -> Dict[str, Any]:
         engine_cls = self._engines.get(task.task_type)
         if not engine_cls:
             shutil.copy2(input_dxf, output_dxf)
             return {"task_id": task.task_id, "success": False,
                     "error": f"no engine for {task.task_type}"}
 
-        engine = engine_cls()
+        # Pass profile-discovered protected blocks to delete engine
+        if profile and profile.protected_blocks and task.task_type == "delete_clouded_entities":
+            engine = engine_cls(protected_block_names=profile.protected_blocks)
+        else:
+            engine = engine_cls()
         params = dict(task.parameters)
+        # Pass the annotation text to the engine for pattern matching
+        # (e.g., AddTextLabelEngine checks if text mentions "revision row")
+        params.setdefault("text", task.text or "")
         if params_override:
             params.update(params_override)
         if task.dxf_region:
@@ -195,27 +208,20 @@ class MarkupPipeline:
             elif task.task_type in ("change_text_value", "add_text_label"):
                 if "point" not in params:
                     reg = task.dxf_region
-                    # For add_text_label with a callout arrow, use the arrow
-                    # tip (last vertex) as the insertion point — that's where
-                    # the user pointed.  Fall back to the region bbox otherwise.
+                    # For add_text_label/change_text_value with a callout arrow,
+                    # use the arrow tip (last vertex) as the target point —
+                    # that's where the user pointed.
                     source = task.source_annotation or {}
                     arrow_verts = source.get("arrow_vertices") or source.get("cloud_vertices")
-                    if arrow_verts and task.task_type == "add_text_label":
-                        # Map the last vertex (arrow tip) from PDF to DXF
-                        tip_pdf = arrow_verts[-1]
-                        # dxf_region polygon bbox gives us the mapped region;
-                        # but we need the specific DXF point for the tip.
-                        # If the region is a polygon, the verts are already
-                        # mapped to DXF in dxf_region["verts"].
-                        if reg and reg.get("type") == "polygon" and reg.get("verts"):
-                            dxf_verts = reg["verts"]
-                            # Last vertex = arrow tip in DXF space
-                            tip_dxf = dxf_verts[-1]
-                            params["point"] = (tip_dxf[0], tip_dxf[1])
-                            params["near_point"] = params["point"]
-                        elif reg and reg.get("type") == "point":
-                            params["point"] = reg["coords"]
-                            params["near_point"] = reg["coords"]
+                    if arrow_verts and reg and reg.get("type") == "polygon" and reg.get("verts"):
+                        # Last vertex = arrow tip in DXF space
+                        dxf_verts = reg["verts"]
+                        tip_dxf = dxf_verts[-1]
+                        params["point"] = (tip_dxf[0], tip_dxf[1])
+                        params["near_point"] = params["point"]
+                    elif reg and reg.get("type") == "point":
+                        params["point"] = reg["coords"]
+                        params["near_point"] = reg["coords"]
                     elif reg.get("type") == "bbox":
                         c = reg["coords"]
                         params["point"] = (c[0], c[3])
@@ -240,13 +246,13 @@ class MarkupPipeline:
                     "traceback": traceback.format_exc()}
 
     def _execute_task_with_retry(self, input_dxf: str, task: Task,
-                                  output_dxf: str) -> tuple:
+                                  output_dxf: str, profile=None) -> tuple:
         """Run task. If it fails, optionally perturb parameters and retry once."""
-        report = self._execute_task(input_dxf, task, output_dxf)
+        report = self._execute_task(input_dxf, task, output_dxf, profile=profile)
         attempt = 1
         if not report.get("success") and self.max_engine_retries > 0:
             perturbed = self._perturb_params(task.task_type, dict(task.parameters), attempt)
-            report = self._execute_task(input_dxf, task, output_dxf, perturbed)
+            report = self._execute_task(input_dxf, task, output_dxf, perturbed, profile=profile)
             report["retried"] = True
             report["retry_params"] = perturbed
             attempt = 2

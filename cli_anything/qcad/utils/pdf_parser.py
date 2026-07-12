@@ -73,7 +73,9 @@ def _is_actionable(text: str) -> bool:
         'windsor plant', 'plant support'
     ]
     if any(pat in text_lower for pat in skip_patterns):
-        action_keywords = ['replace', 'move', 'change', 'delete', 'add', 'reorder']
+        action_keywords = ['replace', 'move', 'change', 'delete', 'add', 'reorder',
+                           'duplicate', 'copy', 'clone', 'remove', 'insert', 'create', 'draw',
+                           'put', 'add to', 'new row']
         return any(kw in text_lower for kw in action_keywords)
     return True
 

@@ -29,13 +29,83 @@ except ImportError as e:  # pragma: no cover
 # Only include generic title-block and ground patterns, not pair-specific
 # labels like F175 or TB24.
 _PROTECTED_TEXT_PATTERNS = {
-    "TITLE", "SHEET", "DRAWING", "REV ", "DATE", "BY ", "APPROVED",
+    "TITLE", "SHEET", "DRAWING", "REV ", "DATE", "BY ", "APPROVED BY",
     "DESCRIPTION", "CHKD", "EPAC", "PLAINS MIDSTREAM",
 }
 # Use exact block name matching (not substring) to avoid false positives
 # like "WLTERM1" matching "TERM".
 _PROTECTED_BLOCK_NAMES = {"Wlltermn", "GROUND", "GND"}
 _PROTECTED_LAYERS = {"TITLEBLOCK", "BORDER", "DEFPOINTS"}
+
+
+def _text_geometry_points(ent) -> List[Tuple[float, float]]:
+    """Return points sampling the bounding box of a TEXT or MTEXT entity.
+
+    Uses the text height, rotation, and an approximate width based on
+    character count to compute the 4 corners + center of the text.
+    This catches text whose insert point is outside a cloud polygon
+    but whose visible glyphs overlap it.
+    """
+    etype = ent.dxftype()
+    ip = ent.dxf.insert
+    x, y = ip.x, ip.y
+    height = getattr(ent.dxf, "height", None) or 0.1
+    if height <= 0:
+        height = 0.1
+
+    # Estimate text width: ~0.6 * height per character for typical CAD fonts
+    if etype == "TEXT":
+        text = ent.dxf.text or ""
+    else:  # MTEXT
+        text = ent.text or ""
+    # Strip MTEXT formatting codes
+    import re
+    text = re.sub(r"\\[A-Za-z][^;]*;", "", text)
+    text = re.sub(r"[{}]", "", text)
+    nchars = max(len(text), 1)
+    width = nchars * height * 0.6
+
+    rot = math.radians(getattr(ent.dxf, "rotation", 0.0) or 0.0)
+    cos_r, sin_r = math.cos(rot), math.sin(rot)
+
+    # Compute corners of the text bounding box relative to insert point
+    # TEXT default alignment is left-justified, bottom-baseline
+    # Corners: (0,0), (width,0), (width,height), (0,height)
+    corners_local = [
+        (0, 0),
+        (width, 0),
+        (width, height),
+        (0, height),
+    ]
+    # Also add midpoints of edges and center for better coverage
+    corners_local.extend([
+        (width / 2, 0),
+        (width, height / 2),
+        (width / 2, height),
+        (0, height / 2),
+        (width / 2, height / 2),
+    ])
+
+    # For MTEXT with align_point, use it as the second anchor
+    points = []
+    for lx, ly in corners_local:
+        rx = lx * cos_r - ly * sin_r + x
+        ry = lx * sin_r + ly * cos_r + y
+        points.append((rx, ry))
+
+    # Also add the raw insert point
+    points.append((x, y))
+
+    # For MTEXT, also add the align_point if present
+    if etype == "MTEXT":
+        try:
+            ap = ent.dxf.align_point
+            if ap:
+                points.append((ap.x, ap.y))
+        except Exception:
+            pass
+
+    return points
 
 
 def _entity_geometry_points(ent) -> List[Tuple[float, float]]:
@@ -72,9 +142,9 @@ def _entity_geometry_points(ent) -> List[Tuple[float, float]]:
         return [(cx + r * math.cos(a), cy + r * math.sin(a))
                 for a in [i * math.pi / 8 for i in range(16)]] + [(cx, cy)]
     if etype == "TEXT":
-        return [(ent.dxf.insert.x, ent.dxf.insert.y)]
+        return _text_geometry_points(ent)
     if etype == "MTEXT":
-        return [(ent.dxf.insert.x, ent.dxf.insert.y)]
+        return _text_geometry_points(ent)
     if etype == "INSERT":
         return [(ent.dxf.insert.x, ent.dxf.insert.y)]
     if etype == "SOLID":
@@ -84,6 +154,11 @@ def _entity_geometry_points(ent) -> List[Tuple[float, float]]:
                 raw.append((sum(v[0] for v in raw) / len(raw),
                             sum(v[1] for v in raw) / len(raw)))
             return raw
+        except Exception:
+            return []
+    if etype == "LEADER":
+        try:
+            return [(v[0], v[1]) for v in ent.vertices]
         except Exception:
             return []
     if etype == "DIMENSION":
@@ -121,11 +196,12 @@ def _entity_is_protected(ent) -> bool:
     return False
 
 
-def _point_in_polygon(pt: Tuple[float, float], polygon: List[Tuple[float, float]]) -> bool:
+def _point_in_polygon(pt: Tuple[float, float], polygon: List[Tuple[float, float]],
+                       radius: float = 0.0) -> bool:
     if not polygon:
         return False
     try:
-        return bool(MplPath(polygon).contains_point(pt))
+        return bool(MplPath(polygon).contains_point(pt, radius=radius))
     except Exception:
         return False
 
@@ -231,6 +307,30 @@ def _entity_inside_polygon(ent, polygon: List[Tuple[float, float]],
             if _segment_intersects_polygon(pts[i], pts[i + 1], polygon):
                 return True
         return _point_in_polygon((cx, cy), polygon)
+
+    if etype == "LEADER":
+        # LEADER entities have vertices (arrowhead + leader line points).
+        # The arrow tip is usually outside the cloud, but the text-end
+        # vertices may be right on the cloud boundary.  Use a small
+        # radius tolerance so leaders whose text labels are inside the
+        # cloud (and thus deleted) are also deleted.
+        try:
+            pts = [(v[0], v[1]) for v in ent.vertices]
+        except Exception:
+            return False
+        if not pts:
+            return False
+        # Check vertices inside polygon (with tolerance for boundary cases)
+        for p in pts:
+            if _point_in_polygon(p, polygon):
+                return True
+            if _point_in_polygon(p, polygon, radius=0.2):
+                return True
+        # Check segment crossings
+        for i in range(len(pts) - 1):
+            if _segment_intersects_polygon(pts[i], pts[i + 1], polygon):
+                return True
+        return False
 
     if etype == "ELLIPSE":
         cx, cy = ent.dxf.center.x, ent.dxf.center.y

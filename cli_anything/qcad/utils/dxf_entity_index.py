@@ -11,6 +11,7 @@ Usage:
 import sys
 import json
 import re
+import math
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass, asdict
@@ -84,19 +85,32 @@ class DxfEntityIndex:
                 self.entities.append(ent)
                 # For INSERT entities, also add the block's text entities
                 if ent.entity_type == 'INSERT' and ent.block_name in block_entities:
+                    # Get INSERT transform parameters
+                    ix, iy = ent.insertion_point
+                    sx = getattr(entity.dxf, 'xscale', 1.0) or 1.0
+                    sy = getattr(entity.dxf, 'yscale', 1.0) or 1.0
+                    sz = getattr(entity.dxf, 'zscale', 1.0) or 1.0
+                    rot = math.radians(getattr(entity.dxf, 'rotation', 0.0) or 0.0)
+                    cos_r = math.cos(rot)
+                    sin_r = math.sin(rot)
                     for block_ent in block_entities[ent.block_name]:
-                        # Clone with the INSERT's insertion point as base
+                        # Apply INSERT scale, rotation, and translation to block entity coords
+                        bx, by = block_ent.insertion_point
+                        # Scale
+                        bx *= sx
+                        by *= sy
+                        # Rotate (around INSERT base point, which is at origin in block space)
+                        rx = bx * cos_r - by * sin_r
+                        ry = bx * sin_r + by * cos_r
+                        # Translate
                         shifted = DxfEntity(
                             handle=f"{ent.handle}#{block_ent.handle}",
                             entity_type=block_ent.entity_type,
                             text=block_ent.text,
-                            insertion_point=(
-                                ent.insertion_point[0] + block_ent.insertion_point[0],
-                                ent.insertion_point[1] + block_ent.insertion_point[1]
-                            ),
+                            insertion_point=(ix + rx, iy + ry),
                             layer=ent.layer,
-                            text_height=block_ent.text_height,
-                            rotation=block_ent.rotation,
+                            text_height=block_ent.text_height * sx if block_ent.text_height else None,
+                            rotation=(block_ent.rotation or 0.0) + math.degrees(rot) if block_ent.rotation is not None else None,
                             block_name=ent.block_name,
                             source_block=ent.block_name,
                         )
@@ -162,12 +176,16 @@ class DxfEntityIndex:
             try:
                 for attrib in entity.attribs:
                     txt = (attrib.dxf.text or "").strip()
-                    if txt and len(txt) >= 3:
+                    if txt and len(txt) >= 1:
+                        # ATTRIB insertion points are already in modelspace
+                        # coordinates (they follow the INSERT's transform
+                        # internally in the DWG/DXF renderer). Do NOT apply
+                        # INSERT scale/rotation to ATTRIB coordinates.
                         attribs.append(DxfEntity(
                             handle=f"{entity.dxf.handle}#{attrib.dxf.handle}",
                             entity_type='ATTRIB',
                             text=txt,
-                            insertion_point=(attrib.dxf.insert[0], attrib.dxf.insert[1]),
+                            insertion_point=(attrib.dxf.insert.x, attrib.dxf.insert.y),
                             layer=entity.dxf.layer,
                             text_height=getattr(attrib.dxf, 'height', None),
                             rotation=getattr(attrib.dxf, 'rotation', None),

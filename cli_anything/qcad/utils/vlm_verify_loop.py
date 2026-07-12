@@ -279,6 +279,18 @@ def make_zoomed_crop(
     x2 = min(w, int(px + half_w_px))
     y2 = min(h, int(py + half_h_px))
 
+    # Guard against inverted rectangles (crop center outside drawing extents)
+    if x2 <= x1:
+        # Crop center maps outside the screenshot — use a centered fallback
+        # size of 20% of screenshot dimension
+        fb_w = w // 5
+        x1 = max(0, int(px) - fb_w // 2)
+        x2 = min(w, int(px) + fb_w // 2)
+    if y2 <= y1:
+        fb_h = h // 5
+        y1 = max(0, int(py) - fb_h // 2)
+        y2 = min(h, int(py) + fb_h // 2)
+
     crop = img.crop((x1, y1, x2, y2))
     if upscale > 1:
         crop = crop.resize(
@@ -412,11 +424,14 @@ def _dxf_verify(check: VerificationCheck, dxf_path: str) -> bool:
         elif check.task_type == "change_text_value":
             # Verify the text value was changed
             val = check.expect_value or ""
-            # Search ATTRIBs in title block INSERTs
+            # Search ATTRIBs in title block INSERTs — try "REV" tag first,
+            # then any ATTRIB whose tag starts with "REV"
             for ent in msp:
                 if ent.dxftype() == "INSERT":
                     for attrib in ent.attribs:
-                        if attrib.dxf.tag == "REV" and val:
+                        tag = attrib.dxf.tag.upper()
+                        if tag == "REV" or (tag.startswith("REV") and val
+                                            and val.upper() in (attrib.dxf.text or "").upper()):
                             return attrib.dxf.text == val
             return False
 
@@ -675,6 +690,10 @@ def run_vlm_verify_loop(
 
         vlm_failed = []
 
+        # Generate drawing profile for extents
+        from cli_anything.qcad.utils.drawing_profile import DrawingProfile
+        profile = DrawingProfile.from_dxf(final_dxf)
+
         if full_screenshot:
             for check in checks:
                 try:
@@ -684,6 +703,7 @@ def run_vlm_verify_loop(
                         check.crop_center,
                         check.crop_size,
                         crop_path,
+                        drawing_extents=profile.extents,
                     )
                     check_result = CheckResult(check=check, passed=None, crop_path=crop_path)
 

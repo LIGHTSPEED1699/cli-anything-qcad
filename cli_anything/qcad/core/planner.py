@@ -361,10 +361,16 @@ def _extract_change_value(text: str) -> Tuple[Optional[str], Optional[str]]:
     m = re.search(r"change\s+(.+?)\s+(?:to|->|→)\s+(.+)", lowered)
     if m:
         return m.group(1).strip().upper(), m.group(2).strip().upper()
-    # "Change to Y" (no explicit target — derive search prefix from Y)
+    # "Change to Y" (no explicit target — use near_point to find the text to change)
     m = re.search(r"change\s+to\s+(.+)", lowered)
     if m:
         new_val = m.group(1).strip().upper()
+        # Don't derive a search prefix from a single-character new_value
+        # (e.g. "change to B" would set target="B" which matches everything
+        # containing B).  Return None target so the engine falls back to
+        # near_point proximity search.
+        if len(new_val) <= 2:
+            return None, new_val
         # Derive a search prefix (e.g. "TB-" from "TB-21", "F" from "F175")
         prefix_match = re.match(r"([A-Z]+[- ]?)", new_val)
         target = prefix_match.group(1).strip() if prefix_match else None
@@ -418,8 +424,15 @@ def _infer_task_from_annotation(annot: Dict[str, Any], affine: Optional[Any],
         if target and new_value:
             parameters = {"target_text": target, "new_value": new_value}
         elif new_value:
-            task_type = TaskType.ADD_TEXT_LABEL.value
-            parameters = {"text": new_value}
+            # No explicit target text. If we have a region (arrow/cloud),
+            # keep as CHANGE_TEXT_VALUE so the engine uses near_point to
+            # find the nearest text. Only fall back to ADD_TEXT_LABEL if
+            # we truly have no location info.
+            if dxf_region:
+                parameters = {"new_value": new_value}
+            else:
+                task_type = TaskType.ADD_TEXT_LABEL.value
+                parameters = {"text": new_value}
         constraints = ["match text style of nearby labels"]
     elif cat_name == "add":
         task_type = TaskType.ADD_TEXT_LABEL.value

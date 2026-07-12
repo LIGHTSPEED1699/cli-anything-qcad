@@ -162,15 +162,24 @@ def generate_cloud_overlay(
 
 
 def _compute_dxf_extents(dxf_path: str) -> Tuple[float, float, float, float]:
-    """Compute DXF model space extents (min_x, min_y, max_x, max_y)."""
+    """Compute DXF model space extents (min_x, min_y, max_x, max_y).
+
+    Includes scaled block content from INSERT entities so that title blocks
+    and other embedded geometry are accounted for in the extents.
+    """
     import ezdxf
+    import math
     doc = ezdxf.readfile(dxf_path)
     msp = doc.modelspace()
     min_x, max_x = float('inf'), float('-inf')
     min_y, max_y = float('inf'), float('-inf')
     for e in msp:
         try:
-            if e.dxftype() in ('TEXT', 'MTEXT'):
+            if e.dxftype() in ('TEXT', 'MTEXT') and not hasattr(e.dxf, 'name'):
+                ip = e.dxf.insert
+                min_x, max_x = min(min_x, ip.x), max(max_x, ip.x)
+                min_y, max_y = min(min_y, ip.y), max(max_y, ip.y)
+            elif e.dxftype() in ('TEXT', 'MTEXT'):
                 ip = e.dxf.insert
                 min_x, max_x = min(min_x, ip.x), max(max_x, ip.x)
                 min_y, max_y = min(min_y, ip.y), max(max_y, ip.y)
@@ -191,6 +200,55 @@ def _compute_dxf_extents(dxf_path: str) -> Tuple[float, float, float, float]:
                 ip = e.dxf.insert
                 min_x, max_x = min(min_x, ip.x), max(max_x, ip.x)
                 min_y, max_y = min(min_y, ip.y), max(max_y, ip.y)
+                # Include scaled block content
+                sx = getattr(e.dxf, 'xscale', 1.0) or 1.0
+                sy = getattr(e.dxf, 'yscale', 1.0) or 1.0
+                rot = math.radians(getattr(e.dxf, 'rotation', 0.0) or 0.0)
+                cos_r, sin_r = math.cos(rot), math.sin(rot)
+                block = doc.blocks.get(e.dxf.name)
+                if block:
+                    for be in block:
+                        try:
+                            pts = []
+                            if be.dxftype() == 'TEXT':
+                                pts = [(be.dxf.insert.x, be.dxf.insert.y)]
+                            elif be.dxftype() == 'LINE':
+                                pts = [(be.dxf.start.x, be.dxf.start.y),
+                                       (be.dxf.end.x, be.dxf.end.y)]
+                            elif be.dxftype() == 'LWPOLYLINE':
+                                pts = [(p[0], p[1]) for p in be.get_points('xy')]
+                            elif be.dxftype() == 'CIRCLE':
+                                c, r = be.dxf.center, be.dxf.radius
+                                pts = [(c.x - r, c.y), (c.x + r, c.y),
+                                       (c.x, c.y - r), (c.x, c.y + r)]
+                            elif be.dxftype() == 'ARC':
+                                c, r = be.dxf.center, be.dxf.radius
+                                import math as _m
+                                a0 = _m.radians(be.dxf.start_angle)
+                                a1 = _m.radians(be.dxf.end_angle)
+                                pts = [(c.x + r * _m.cos(a), c.y + r * _m.sin(a))
+                                       for a in [a0, a1]]
+                                pts.extend([(c.x - r, c.y), (c.x + r, c.y),
+                                            (c.x, c.y - r), (c.x, c.y + r)])
+                            elif be.dxftype() == 'POLYLINE':
+                                for v in be.vertices:
+                                    pts.append((v.dxf.location.x, v.dxf.location.y))
+                            elif be.dxftype() == 'SOLID' or be.dxftype() == 'TRACE':
+                                for attr in ('vtx0', 'vtx1', 'vtx2', 'vtx3'):
+                                    v = getattr(be.dxf, attr, None)
+                                    if v:
+                                        pts.append((v.x, v.y))
+                            else:
+                                continue
+                            for bx, by in pts:
+                                # Apply block scale, then rotation, then translate
+                                scx, scy = bx * sx, by * sy
+                                rx = scx * cos_r - scy * sin_r + ip.x
+                                ry = scx * sin_r + scy * cos_r + ip.y
+                                min_x, max_x = min(min_x, rx), max(max_x, rx)
+                                min_y, max_y = min(min_y, ry), max(max_y, ry)
+                        except Exception:
+                            pass
         except Exception:
             pass
     return min_x, min_y, max_x, max_y
@@ -285,7 +343,7 @@ def generate_dwg_cloud_overlay(
     )
     dwg_img = Image.open(dwg_png).convert('RGBA')
 
-    # 3. DXF extents
+    # 3. DXF extents — use _compute_dxf_extents which handles INSERT scaling
     min_x, min_y, max_x, max_y = _compute_dxf_extents(dxf_path)
     dxf_w = max_x - min_x
     dxf_h = max_y - min_y

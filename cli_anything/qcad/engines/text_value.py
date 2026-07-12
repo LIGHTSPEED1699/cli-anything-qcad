@@ -158,16 +158,26 @@ class ChangeTextValueEngine:
                 if etype not in ("TEXT", "MTEXT", "ATTRIB"):
                     continue
                 try:
-                    if etype == "TEXT" or etype == "ATTRIB":
-                        pt = (ent.dxf.insert.x, ent.dxf.insert.y)
-                    else:
-                        pt = (ent.dxf.insert.x, ent.dxf.insert.y)
+                    pt = (ent.dxf.insert.x, ent.dxf.insert.y)
                 except Exception:
                     continue
                 d = (pt[0] - near[0]) ** 2 + (pt[1] - near[1]) ** 2
                 if d < best_dist:
                     best_dist = d
                     best_ent = ent
+            # Also search ATTRIBs inside INSERT entities (title block values)
+            for ent in msp:
+                if ent.dxftype() != "INSERT":
+                    continue
+                try:
+                    for attrib in ent.attribs:
+                        pt = (attrib.dxf.insert.x, attrib.dxf.insert.y)
+                        d = (pt[0] - near[0]) ** 2 + (pt[1] - near[1]) ** 2
+                        if d < best_dist:
+                            best_dist = d
+                            best_ent = attrib
+                except Exception:
+                    pass
             if best_ent and best_dist < 100:  # reasonable proximity
                 etype = best_ent.dxftype()
                 try:
@@ -227,11 +237,17 @@ class ChangeTextValueEngine:
 
 
 class AddTextLabelEngine:
-    """Add a new TEXT/MTEXT label at a specified location, matching nearby style."""
+    """Add a new TEXT/MTEXT label at a specified location, matching nearby style.
+
+    If the annotation references "revision note" or "revision row", this engine
+    fills in the revision table ATTRIB slots (REV_N, REV_DATE_N, etc.) on the
+    title block INSERT instead of adding a standalone TEXT entity.
+    """
 
     def run(self, dxf_path: str, parameters: Dict[str, Any],
             out_dxf: str) -> Dict[str, Any]:
         text = parameters.get("text", "")
+        new_value = parameters.get("new_value", "")
         point = parameters.get("point")
         layer = parameters.get("layer")
         height = parameters.get("height")
@@ -239,6 +255,17 @@ class AddTextLabelEngine:
 
         doc = ezdxf.readfile(dxf_path)
         msp = doc.modelspace()
+
+        # ── Revision row filling mode ──────────────────────────
+        # If the annotation text mentions "revision note" or "revision row",
+        # fill in the next empty revision table ATTRIB slot.
+        annotation_text = (text or "").lower()
+        if "revision" in annotation_text and ("note" in annotation_text
+                                               or "row" in annotation_text):
+            result = self._fill_revision_row(doc, msp, new_value, parameters, out_dxf, dxf_path=dxf_path)
+            if result is not None:
+                return result
+            # Fall through to standalone TEXT if revision table not found
 
         if not point and region:
             # Pick a sensible point: upper-left of bbox
@@ -276,3 +303,110 @@ class AddTextLabelEngine:
             "snapped_to_wire": snap_pt is not None,
             "output_dxf": out_dxf,
         }
+
+    def _fill_revision_row(self, doc, msp, new_value: str,
+                           parameters: Dict[str, Any], out_dxf: str,
+                           dxf_path: str = None) -> Optional[Dict[str, Any]]:
+        """Fill the next empty revision ATTRIB slot on the title block INSERT.
+
+        Revision table structure is auto-discovered from DrawingProfile when
+        dxf_path is provided. Falls back to REV_1..REV_8 convention.
+
+        Finds the first empty REV_N slot, fills it with the new revision value,
+        copies DRAW/CHK from the previous filled row, and returns the result.
+        Returns None if no revision table INSERT is found.
+        """
+        # Discover revision table structure from profile
+        rev_block_name = None
+        tag_pattern = "REV_{n}"  # default
+        max_rows = 8
+        date_pattern = "REV_DATE_{n}"
+        draw_pattern = "REV_DRAW_{n}"
+        chk_pattern = "REV_CHK_{n}"
+
+        if dxf_path:
+            try:
+                from cli_anything.qcad.utils.drawing_profile import DrawingProfile
+                profile = DrawingProfile.from_dxf(dxf_path)
+                if profile.rev_table:
+                    rev_block_name = profile.rev_table.block_name
+                    tag_pattern = profile.rev_table.tag_pattern
+                    max_rows = profile.rev_table.max_rows
+                    date_pattern = profile.rev_table.date_tag_pattern
+                    draw_pattern = profile.rev_table.draw_tag_pattern
+                    chk_pattern = profile.rev_table.chk_tag_pattern
+            except Exception:
+                pass
+
+        # Parse new_value: "B, 2026/07/10" -> rev="B", date="2026/07/10"
+        rev_letter = ""
+        rev_date = ""
+        if "," in new_value:
+            parts = new_value.split(",", 1)
+            rev_letter = parts[0].strip()
+            rev_date = parts[1].strip()
+        else:
+            rev_letter = new_value.strip()
+
+        # Find INSERT with REV_N ATTRIBs (title block)
+        for ent in msp:
+            if ent.dxftype() != "INSERT":
+                continue
+            # If profile found a specific block name, only match that.
+            # Otherwise, match any INSERT with REV_1 (or REV1) ATTRIBs.
+            if rev_block_name and ent.dxf.name != rev_block_name:
+                continue
+            attribs = {a.dxf.tag: a for a in ent.attribs}
+            # Check if this INSERT has revision table ATTRIBs
+            first_rev_tag = tag_pattern.replace("{n}", "1").replace("{n:02d}", "01")
+            if first_rev_tag not in attribs:
+                continue
+
+            # Find the first empty revision row (REV_N where REV_N.text is empty)
+            for n in range(1, max_rows + 1):
+                if "{n:02d}" in tag_pattern:
+                    rev_tag = tag_pattern.replace("{n:02d}", f"{n:02d}")
+                else:
+                    rev_tag = tag_pattern.replace("{n}", str(n))
+                if rev_tag in attribs:
+                    current = attribs[rev_tag].dxf.text or ""
+                    if not current.strip():
+                        # This is the next empty row — fill it
+                        if rev_letter:
+                            attribs[rev_tag].dxf.text = rev_letter
+                        if rev_date and date_pattern:
+                            date_tag = date_pattern.replace("{n}", str(n)).replace("{n:02d}", f"{n:02d}")
+                            if date_tag in attribs:
+                                attribs[date_tag].dxf.text = rev_date
+                        # Copy DRAW and CHK from the previous filled row
+                        prev = n - 1
+                        if prev >= 1:
+                            for pattern in [draw_pattern, chk_pattern]:
+                                if not pattern:
+                                    continue
+                                prev_tag = pattern.replace("{n}", str(prev)).replace("{n:02d}", f"{prev:02d}")
+                                curr_tag = pattern.replace("{n}", str(n)).replace("{n:02d}", f"{n:02d}")
+                                if prev_tag in attribs and curr_tag in attribs:
+                                    attribs[curr_tag].dxf.text = attribs[prev_tag].dxf.text
+
+                            doc.saveas(out_dxf)
+                            return {
+                                "engine": "add_text_label",
+                                "success": True,
+                                "revision_row_filled": n,
+                                "rev_letter": rev_letter,
+                                "rev_date": rev_date,
+                                "insert_handle": ent.dxf.handle,
+                                "output_dxf": out_dxf,
+                            }
+
+            # All rows filled — can't add more
+            doc.saveas(out_dxf)
+            return {
+                "engine": "add_text_label",
+                "success": False,
+                "error": f"All {max_rows} revision table rows are filled",
+                "output_dxf": out_dxf,
+            }
+
+        return None  # No revision table found
