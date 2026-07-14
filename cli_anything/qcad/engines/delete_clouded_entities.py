@@ -146,7 +146,44 @@ def _entity_geometry_points(ent) -> List[Tuple[float, float]]:
     if etype == "MTEXT":
         return _text_geometry_points(ent)
     if etype == "INSERT":
-        return [(ent.dxf.insert.x, ent.dxf.insert.y)]
+        # Return insert point plus sampled points from block sub-entity geometry
+        # (scaled and translated to world coordinates).  This catches terminal
+        # symbols whose insert point is outside the cloud but whose visible
+        # geometry (circle, lines) overlaps it.
+        pts = [(ent.dxf.insert.x, ent.dxf.insert.y)]
+        try:
+            sx = ent.dxf.xscale or 1.0
+            sy = ent.dxf.yscale or 1.0
+            blk = ent.block()
+            if blk is not None:
+                for be in blk:
+                    if be.dxftype() == "LINE":
+                        s, e2 = be.dxf.start, be.dxf.end
+                        pts.append((ent.dxf.insert.x + s.x * sx, ent.dxf.insert.y + s.y * sy))
+                        pts.append((ent.dxf.insert.x + e2.x * sx, ent.dxf.insert.y + e2.y * sy))
+                        pts.append((ent.dxf.insert.x + (s.x + e2.x) / 2 * sx,
+                                    ent.dxf.insert.y + (s.y + e2.y) / 2 * sy))
+                    elif be.dxftype() == "CIRCLE":
+                        cx, cy, r = be.dxf.center.x, be.dxf.center.y, be.dxf.radius
+                        for a_idx in range(8):
+                            a = a_idx * math.pi / 4
+                            pts.append((ent.dxf.insert.x + (cx + r * math.cos(a)) * sx,
+                                        ent.dxf.insert.y + (cy + r * math.sin(a)) * sy))
+                    elif be.dxftype() == "ARC":
+                        cx, cy, r = be.dxf.center.x, be.dxf.center.y, be.dxf.radius
+                        sa = math.radians(be.dxf.start_angle)
+                        ea = math.radians(be.dxf.end_angle)
+                        for i in range(8):
+                            a = sa + i * (ea - sa) / 7
+                            pts.append((ent.dxf.insert.x + (cx + r * math.cos(a)) * sx,
+                                        ent.dxf.insert.y + (cy + r * math.sin(a)) * sy))
+                    elif be.dxftype() == "LWPOLYLINE":
+                        for p in be.get_points("xy"):
+                            pts.append((ent.dxf.insert.x + p[0] * sx,
+                                        ent.dxf.insert.y + p[1] * sy))
+        except Exception:
+            pass
+        return pts
     if etype == "SOLID":
         try:
             raw = [(v.x, v.y) for v in ent.wcs_vertices()]
@@ -369,11 +406,16 @@ def _entity_inside_polygon(ent, polygon: List[Tuple[float, float]],
             pass
         return False
 
-    # --- Point-like entities: point-in-polygon ---
+    # --- Point-like entities: point-in-polygon with boundary tolerance ---
+    # Use a small negative radius to slightly expand the polygon boundary,
+    # catching entities that visually overlap the cloud but whose geometry
+    # points fall just outside due to PDF→DXF calibration imprecision
+    # (typically < 0.1 units).  matplotlib's radius is a shrink factor:
+    # positive values make the test stricter, negative values expand.
     pts = _entity_geometry_points(ent)
     if not pts:
         return False
-    inside = [p for p in pts if _point_in_polygon(p, polygon)]
+    inside = [p for p in pts if _point_in_polygon(p, polygon, radius=-0.1)]
     if require_all_endpoints:
         return len(inside) == len(pts) and len(pts) > 0
     return len(inside) >= min_points_inside
