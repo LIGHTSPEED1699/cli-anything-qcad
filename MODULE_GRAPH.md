@@ -5,9 +5,6 @@ flowchart LR
 
     subgraph backends[Backends]
         dwg_converter[dwg_converter]
-        ezdxf_backend[ezdxf_backend]
-        qcad_ecma_backend[qcad_ecma_backend]
-        vlm_x11_backend[vlm_x11_backend]
     end
 
     subgraph core[Core]
@@ -19,14 +16,9 @@ flowchart LR
     subgraph engines[Engines]
         clone_terminal_wires[clone_terminal_wires]
         cloud_clone[cloud_clone]
-        cloud_clone_fixed[cloud_clone_fixed]
-        cloud_clone_v3_original[cloud_clone_v3_original]
-        cloud_deletion[cloud_deletion]
-        delete_by_handle[delete_by_handle]
         delete_clouded_entities[delete_clouded_entities]
         extra_ops[extra_ops]
         geometry_ops[geometry_ops]
-        terminal_clone[terminal_clone]
         text_based_clone[text_based_clone]
         text_value[text_value]
     end
@@ -41,7 +33,6 @@ flowchart LR
         terminal_positions[terminal_positions]
         visual_verifier[visual_verifier]
         visual_verify[visual_verify]
-        vlm_verify_loop[vlm_verify_loop]
     end
 
     subgraph pipelines[Pipelines]
@@ -55,17 +46,10 @@ flowchart LR
     cloud_clone --> delete_clouded_entities
     cloud_clone --> layer_fix
     cloud_clone --> terminal_positions
-    cloud_clone_fixed --> delete_clouded_entities
-    cloud_clone_fixed --> layer_fix
-    cloud_clone_fixed --> terminal_positions
-    cloud_clone_v3_original --> delete_clouded_entities
-    cloud_deletion --> delete_by_handle
-    cloud_deletion --> layer_fix
     cloud_overlay --> dwg_converter
     cloud_overlay --> dxf_entity_index
     cloud_overlay --> planner
     dwg_converter --> layer_fix
-    ezdxf_backend --> dxf_entity_index
     markup_pipeline --> clone_terminal_wires
     markup_pipeline --> cloud_clone
     markup_pipeline --> cloud_overlay
@@ -95,10 +79,6 @@ flowchart LR
     text_value --> drawing_profile
     text_value --> dxf_entity_index
     visual_verify --> dwg_converter
-    vlm_verify_loop --> drawing_profile
-    vlm_verify_loop --> markup_pipeline
-    vlm_verify_loop --> visual_verifier
-    vlm_x11_backend --> visual_verifier
 
     classDef backends fill:#e1f5fe,stroke:#0288d1
     classDef core fill:#f3e5f5,stroke:#7b1fa2
@@ -108,22 +88,14 @@ flowchart LR
     classDef other fill:#f5f5f5,stroke:#616161
 
     class dwg_converter backends
-    class ezdxf_backend backends
-    class qcad_ecma_backend backends
-    class vlm_x11_backend backends
     class categories core
     class planner core
     class session core
     class clone_terminal_wires engines
     class cloud_clone engines
-    class cloud_clone_fixed engines
-    class cloud_clone_v3_original engines
-    class cloud_deletion engines
-    class delete_by_handle engines
     class delete_clouded_entities engines
     class extra_ops engines
     class geometry_ops engines
-    class terminal_clone engines
     class text_based_clone engines
     class text_value engines
     class cloud_overlay utils
@@ -135,9 +107,8 @@ flowchart LR
     class terminal_positions utils
     class visual_verifier utils
     class visual_verify utils
-    class vlm_verify_loop utils
     class markup_pipeline pipelines
     class qcad_cli other
 ```
 
-**Note:** `vlm_automation/` contains 54 standalone scripts with no inter-module dependencies (all isolated).
+**Note:** `archive/` at the repo root contains superseded prototypes — the old `vlm_automation/` directory (149 files), 5 retired engine variants, 3 unused backends, and orphaned scripts. None are imported by the active package.
