@@ -192,17 +192,28 @@ class PdfAnnotationParser:
             # Collect all line-segment points
             pts: List[Tuple[float, float]] = []
             has_rect = False
+            rect_obj = None
             for it in items:
                 op = it[0]
                 if op == "re":
                     has_rect = True
-                for k in range(1, len(it)):
-                    v = it[k]
-                    if isinstance(v, fitz.Point):
-                        pts.append((v.x, v.y))
-                    elif isinstance(v, fitz.Rect):
-                        pts.append((v.x0, v.y0))
-                        pts.append((v.x1, v.y1))
+                    # PyMuPDF 're' items contain a fitz.Rect — extract 4 corners
+                    for k in range(1, len(it)):
+                        v = it[k]
+                        if isinstance(v, fitz.Rect):
+                            rect_obj = v
+                            pts.append((v.x0, v.y0))
+                            pts.append((v.x1, v.y0))
+                            pts.append((v.x1, v.y1))
+                            pts.append((v.x0, v.y1))
+                else:
+                    for k in range(1, len(it)):
+                        v = it[k]
+                        if isinstance(v, fitz.Point):
+                            pts.append((v.x, v.y))
+                        elif isinstance(v, fitz.Rect):
+                            pts.append((v.x0, v.y0))
+                            pts.append((v.x1, v.y1))
             if has_rect:
                 shapes.append({
                     "type": "rectangle",
@@ -211,7 +222,7 @@ class PdfAnnotationParser:
                 })
             elif len(pts) >= 4:
                 # An arrow is typically 4+ points forming a line + arrowhead.
-                # Heuristic: not closed, spans a decent distance (>15pt).
+                # Heuristic: not closed, spans a decent distance (>10pt).
                 span = max(r.width, r.height)
                 if span > 10:
                     shapes.append({

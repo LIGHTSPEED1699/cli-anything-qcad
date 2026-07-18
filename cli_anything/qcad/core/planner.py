@@ -159,7 +159,7 @@ def _extract_pdf_text_spans(pdf_path: str) -> Dict[str, List[Tuple[float, float,
 def _calibrate_affine(pdf_spans: Dict[str, List[Tuple[float, float, float, float]]],
                       dxf_index: DxfEntityIndex,
                       min_matches: int = 6,
-                      max_median_residual: float = 0.5) -> Optional[Any]:
+                      max_median_residual: float = 2.0) -> Optional[Any]:
     """Compute affine transform from PDF display coords to DXF coords using text label correspondences.
 
     Returns None if:
@@ -221,54 +221,47 @@ def _calibrate_affine(pdf_spans: Dict[str, List[Tuple[float, float, float, float
 
     # Spatial coverage check: if the DXF drawing is large and calibration
     # points cover too little of the page, the affine extrapolates unreliably.
-    # For small drawings (both dims < 15 DXF units), even narrow coverage
-    # can produce a usable affine because extrapolation distances are small.
-    # For large drawings, require at least 25% X and 15% Y page coverage.
-    # We compare calibration PDF range to page size, AND calibration DXF
-    # range to full DXF extents (computed from all entities).
+    # We compare calibration DXF range to the range covered by ALL text
+    # entities (not all entities including geometry/title-block), since
+    # text entities are what we calibrate against and what we target.
     if len(A) >= 3:
-        import ezdxf as _ezdxf
-        page_w = 1224.0
-        page_h = 792.0
         pdf_x_range = float(A[:, 0].max() - A[:, 0].min())
         pdf_y_range = float(A[:, 1].max() - A[:, 1].min())
         dxf_match_x = float(B[:, 0].max() - B[:, 0].min())
         dxf_match_y = float(B[:, 1].max() - B[:, 1].min())
 
-        # Compute full DXF extents
+        # Use text-entity range as reference instead of full entity extents
+        # (full extents include title blocks and border geometry at very
+        # different coordinate ranges from the drawing content).
+        # Only count TEXT entities with non-empty text — empty TEXT and
+        # INSERT blocks in title-block areas inflate the range.
         try:
+            import ezdxf as _ezdxf
             _doc = _ezdxf.readfile(dxf_index.dxf_path)
             _msp = _doc.modelspace()
-            _dxmin_x = _dxmin_y = float('inf')
-            _dxmax_x = _dxmax_y = float('-inf')
+            _text_xs, _text_ys = [], []
             for _e in _msp:
                 try:
-                    if _e.dxftype() in ('TEXT', 'MTEXT', 'INSERT'):
-                        _x, _y = _e.dxf.insert.x, _e.dxf.insert.y
-                    elif _e.dxftype() == 'LINE':
-                        _x, _y = _e.dxf.start.x, _e.dxf.start.y
-                    elif _e.dxftype() == 'LWPOLYLINE':
-                        _pts = list(_e.get_points("xy"))
-                        _x, _y = _pts[0] if _pts else (0, 0)
-                    elif _e.dxftype() in ('CIRCLE', 'ARC'):
-                        _x, _y = _e.dxf.center.x, _e.dxf.center.y
-                    else:
-                        continue
-                    _dxmin_x = min(_dxmin_x, _x)
-                    _dxmax_x = max(_dxmax_x, _x)
-                    _dxmin_y = min(_dxmin_y, _y)
-                    _dxmax_y = max(_dxmax_y, _y)
+                    if _e.dxftype() in ('TEXT', 'MTEXT'):
+                        _txt = getattr(_e.dxf, 'text', '') or ''
+                        _txt = _txt.strip() if isinstance(_txt, str) else ''
+                        if _txt:  # non-empty text only
+                            _text_xs.append(_e.dxf.insert.x)
+                            _text_ys.append(_e.dxf.insert.y)
                 except Exception:
                     pass
-            full_dxf_w = _dxmax_x - _dxmin_x
-            full_dxf_h = _dxmax_y - _dxmin_y
+            if _text_xs and _text_ys:
+                full_dxf_w = max(_text_xs) - min(_text_xs)
+                full_dxf_h = max(_text_ys) - min(_text_ys)
+            else:
+                full_dxf_w = dxf_match_x
+                full_dxf_h = dxf_match_y
         except Exception:
             full_dxf_w = dxf_match_x
             full_dxf_h = dxf_match_y
 
-        # Reject if: DXF is large (>15 units) AND calibration covers <25% of
-        # the DXF in that axis.  This catches title-block-only calibration on
-        # large drawings where extrapolation would be unreliable.
+        # Reject if: DXF text range is large (>15 units) AND calibration
+        # covers <25% of the text range in that axis.
         if full_dxf_w > 15.0 and dxf_match_x / full_dxf_w < 0.25:
             return None
         if full_dxf_h > 15.0 and dxf_match_y / full_dxf_h < 0.15:
