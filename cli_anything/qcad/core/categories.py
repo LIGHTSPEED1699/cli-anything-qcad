@@ -135,6 +135,19 @@ def classify(annotation_text: str) -> ModificationCategory:
     if any(v in text_lower for v in ["copy", "clone", "duplicate", "replicate"]):
         return CATEGORIES["clone"]
 
+    # "Add labels" / "add label" is an add operation, not a text change.
+    # Without this, "label" in text_change verbs wins the scoring tie and
+    # routes it to ChangeTextValueEngine, which fails (no target text to
+    # change — these are new labels being inserted).
+    if "add label" in text_lower or "add labels" in text_lower:
+        return CATEGORIES["add"]
+
+    # Explicit add/insert/create at the start of the instruction is a
+    # strong add signal — don't let "label" or other secondary verbs
+    # pull it into text_change.
+    if text_lower.startswith(("add ", "insert ", "create ", "draw ")):
+        return CATEGORIES["add"]
+
     best = CATEGORIES["ambiguous"]
     best_score = 0
     for cat in CATEGORIES.values():
