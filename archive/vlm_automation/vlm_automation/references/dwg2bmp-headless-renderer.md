@@ -4,7 +4,7 @@
 
 The `vlm-cad-automation` skill has a "Headless Rendering Reality" pitfall that
 says all headless renderers are broken. **As of 2026-06-04, this is no longer
-true.** QCAD Pro 3.32.7 ships a `dwg2bmp` CLI that produces a valid PNG of
+true.** QCAD Pro ships a `dwg2bmp` CLI that produces a valid PNG of
 any DWG/DXF in ~3 seconds, with no X11, no Qt platform plugin, no ODA File
 Converter needed. This is the validated pattern for VLM verification images.
 
@@ -25,7 +25,7 @@ Converter needed. This is the validated pattern for VLM verification images.
 
 ```bash
 # Setup
-export QCAD_DIR=$HOME/opt/qcad-3.32.7-pro-linux-qt6-x86_64
+export QCAD_DIR=$HOME/opt/qcad
 export LD_LIBRARY_PATH=$QCAD_DIR:$LD_LIBRARY_PATH
 # Optional: kill any lingering QCAD instances
 pkill -9 -f qcad-bin 2>/dev/null
@@ -79,7 +79,7 @@ from pathlib import Path
 
 def render_dwg_to_png(dwg_path: Path, png_path: Path, timeout: int = 60) -> Path:
     """Headless DWG → PNG using QCAD's dwg2bmp."""
-    qcad_dir = os.path.expanduser("~/opt/qcad-3.32.7-pro-linux-qt6-x86_64")
+    qcad_dir = os.path.expanduser("~/opt/qcad")
     env = {**os.environ, "LD_LIBRARY_PATH": f"{qcad_dir}:{os.environ.get('LD_LIBRARY_PATH','')}"}
     subprocess.run(
         ["timeout", str(timeout), f"{qcad_dir}/dwg2bmp",

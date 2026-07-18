@@ -91,7 +91,7 @@ def render_side_by_side(left_dxf, right_dxf, png_path, xlim=None, ylim=None,
 
 
 def vlm_analyze(png_path, prompt, model="qwen2.5vl:latest",
-                url="http://192.168.2.15:11434/api/generate", timeout=120):
+                url="http://localhost:11434/api/generate", timeout=120):
     """Send PNG to VLM for analysis."""
     with open(png_path, "rb") as f:
         img_data = base64.b64encode(f.read()).decode("utf-8")
@@ -117,7 +117,7 @@ def main():
     parser.add_argument("--zoom-xlim", nargs=2, type=float, help="Zoom region x-min x-max")
     parser.add_argument("--zoom-ylim", nargs=2, type=float, help="Zoom region y-min y-max")
     parser.add_argument("--model", default="qwen2.5vl:latest")
-    parser.add_argument("--url", default="http://192.168.2.15:11434/api/generate")
+    parser.add_argument("--url", default="http://localhost:11434/api/generate")
     parser.add_argument("--out", default="/tmp/vlm_verify.png")
     args = parser.parse_args()
 

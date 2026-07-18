@@ -30,8 +30,8 @@ This document covers workflow #2/#3: when you have an ODA-generated DXF and want
 # Method A: ODA File Converter GUI (human clicks Start)
 cp original.dwg /tmp/oda_input/
 # ... launch ODA GUI, user clicks Start ...
-# Output appears in /home/hongbin/Downloads/
-mv /home/hongbin/Downloads/original.dxf output/4_oda.dxf
+# Output appears in ~/Downloads/
+mv ~/Downloads/original.dxf output/4_oda.dxf
 
 # Method B: ODA File Converter CLI (if it works in your environment)
 ODAFileConverter /tmp/oda_input/ /tmp/oda_output/ "ACAD2018" "DXF" "0" "1"

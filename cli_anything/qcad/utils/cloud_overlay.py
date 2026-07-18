@@ -320,7 +320,7 @@ def generate_dwg_cloud_overlay(
         Path to the saved PNG.
     """
     if qcad_dir is None:
-        qcad_dir = "/home/hongbin/opt/qcad-3.32.7-pro-linux-qt6-x86_64"
+        qcad_dir = os.environ.get('QCAD_DIR', 'qcad')
 
     # 1. Convert DWG → DXF
     from cli_anything.qcad.backends.dwg_converter import DwgConverter

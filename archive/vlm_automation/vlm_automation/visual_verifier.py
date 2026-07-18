@@ -70,7 +70,7 @@ class VisualVerifier:
         """Detect available rendering tools."""
         self.tools = {
             "librecad": shutil.which("librecad") is not None,
-            "qcad": shutil.which("qcad") is not None or Path("~/opt/qcad-3.32.7-pro-linux-qt6-x86_64/qcad").expanduser().exists(),
+            "qcad": shutil.which("qcad") is not None or Path("~/opt/qcad/qcad").expanduser().exists(),
             "dwg2pdf": shutil.which("dwg2pdf") is not None,
             "ODAFileConverter": self._find_oda_converter() is not None,
             "convert": shutil.which("convert") is not None,  # ImageMagick
@@ -98,7 +98,7 @@ class VisualVerifier:
         qcad_path = shutil.which("qcad")
         if qcad_path:
             return qcad_path
-        home_qcad = Path("~/opt/qcad-3.32.7-pro-linux-qt6-x86_64/qcad").expanduser()
+        home_qcad = Path("~/opt/qcad/qcad").expanduser()
         if home_qcad.exists():
             return str(home_qcad)
         return None

@@ -69,7 +69,7 @@ Key features of the cua-driver verifier:
 - **Background window detection** — uses `cua-driver call list_windows` instead of `xdotool search`, reliable even with QCAD's bash-wrapper → `qcad-bin` PID split.
 - **No focus stealing** — screenshots are captured in the background via cua-driver's `get_window_state` with `screenshot_out_file`, no `windowactivate`/`windowraise`.
 - **Cua-driver daemon** — requires `cua-driver serve` to be running (see [cua-driver docs](https://github.com/trycua/cua)).
-- **VLM endpoint** — defaults to `http://192.168.2.15:11434` with `qwen2.5vl:latest`; override via `OLLAMA_URL` and `VISION_MODEL` env vars.
+- **VLM endpoint** — defaults to `http://localhost:11434` with `qwen2.5vl:latest`; override via `OLLAMA_URL` and `VISION_MODEL` env vars.
 
 ```bash
 # Direct VLM verification via CLI

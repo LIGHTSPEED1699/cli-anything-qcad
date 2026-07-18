@@ -60,7 +60,7 @@ This is the **manual step**. The ODA window is already open and sees the file in
 
 ### Step 4: Agent polls for output and continues
 ```python
-# Poll /home/hongbin/Downloads/ for 4.dxf
+# Poll ~/Downloads/ for 4.dxf
 # Move to working directory when detected
 ```
 

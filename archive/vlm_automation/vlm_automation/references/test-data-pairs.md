@@ -1,6 +1,6 @@
 # Production Test Data Reference — Pair 1/2/3
 
-Location: `/home/hongbin/.hermes/kanban/workspaces/testfiles_2026.05.07/`
+Location: `~/.hermes/kanban/workspaces/testfiles_2026.05.07/`
 
 ## Summary
 

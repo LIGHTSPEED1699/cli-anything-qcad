@@ -104,8 +104,8 @@ doc.saveas(out_dxf, fmt='asc')
 ### QCAD Pro Export Command
 
 ```bash
-export LD_LIBRARY_PATH=/home/hongbin/opt/qcad-3.32.7-pro-linux-qt6-x86_64:/home/hongbin/opt/qcad-3.32.7-pro-linux-qt6-x86_64/plugins
-QCAD=/home/hongbin/opt/qcad-3.32.7-pro-linux-qt6-x86_64/qcad-bin
+export LD_LIBRARY_PATH=<qcad-install-dir>:<qcad-install-dir>/plugins
+QCAD=<qcad-install-dir>/qcad-bin
 
 $QCAD -no-gui -platform offscreen \
   -autostart qcad_dxf2dwg.js \

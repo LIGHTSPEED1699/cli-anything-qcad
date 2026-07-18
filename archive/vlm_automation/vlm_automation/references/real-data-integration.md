@@ -138,7 +138,7 @@ The parser correctly flags genuinely ambiguous annotations ("add BLK" without co
 
 ## File Inventory for Reproduction
 
-Test data location: `/home/hongbin/.hermes/kanban/workspaces/testfiles_2026.05.07/`
+Test data location: `~/.hermes/kanban/workspaces/testfiles_2026.05.07/`
 
 | Pair | Drawing | Markup | DXF | Entities | Layers | FreeText |
 |------|---------|--------|-----|----------|--------|----------|

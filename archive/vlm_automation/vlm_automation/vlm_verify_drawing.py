@@ -24,7 +24,7 @@ Usage Quick Test
         --dxf 3_cloned_v7_fixed.dxf \\
         --original-dxf 3_clean.dxf \\
         --model qwen2.5vl:latest \\
-        --ollama-url http://192.168.2.15:11434
+        --ollama-url http://localhost:11434
 """
 
 import argparse

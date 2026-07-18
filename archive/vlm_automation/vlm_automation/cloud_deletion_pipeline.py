@@ -532,7 +532,7 @@ def export_dwg(dxf: Path, dwg: Path, qcad_bin: Path):
 
     subprocess.run(['pkill', '-9', '-f', 'qcad'], capture_output=True)
     env = {
-        'HOME': os.environ.get('HOME', '/home/hongbin'),
+        'HOME': os.environ.get('HOME', '/home/user'),
         'LD_LIBRARY_PATH': f'{qd}:{qd}/plugins',
         'PATH': '/usr/bin:/bin',
     }
@@ -710,7 +710,7 @@ def main():
     ap.add_argument('--out-dwg', required=True, type=Path,
                     help='Output DWG path')
     ap.add_argument('--qcad', type=Path,
-                    default=Path('/home/hongbin/opt/qcad-3.32.7-pro-linux-qt6-x86_64/qcad-bin'))
+                    default=Path(os.environ.get('QCAD_DIR', 'qcad') + '/qcad-bin'))
     ap.add_argument('--workspace', type=Path,
                     default=Path(tempfile.mkdtemp(prefix='cdp_')))
     ap.add_argument('--overrides', type=Path,

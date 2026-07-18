@@ -54,7 +54,7 @@ class VlmX11Backend:
 
     def ask_vlm(self, image_path: str, question: str, ollama_url: str = None,
                 model: str = None) -> Dict[str, Any]:
-        ollama_url = ollama_url or os.environ.get("OLLAMA_URL", "http://192.168.2.15:11434")
+        ollama_url = ollama_url or os.environ.get("OLLAMA_URL", "http://localhost:11434")
         model = model or os.environ.get("VISION_MODEL", "gemma4:31b-cloud")
         with open(image_path, "rb") as f:
             image_b64 = base64.b64encode(f.read()).decode()

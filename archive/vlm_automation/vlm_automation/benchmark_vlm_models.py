@@ -58,8 +58,8 @@ DEFAULT_QUESTIONS = [
 ]
 
 DEFAULT_MODELS = ["qwen2.5vl:latest", "gemma4:e4b", "gemma4:31b-cloud"]
-DEFAULT_OLLAMA = "http://192.168.2.15:11434"
-DEFAULT_IMAGE = "/home/hongbin/.hermes/kanban/workspaces/testfiles_2026.05.07/1_FINAL_v11.dwg"
+DEFAULT_OLLAMA = "http://localhost:11434"
+DEFAULT_IMAGE = "~/.hermes/kanban/workspaces/testfiles_2026.05.07/1_FINAL_v11.dwg"
 DEFAULT_OUT_JSON = "/tmp/vlm_benchmark.json"
 DEFAULT_OUT_MD = "/tmp/vlm_benchmark.md"
 
@@ -69,7 +69,7 @@ def render_dwg_to_png(dwg_path: Path, png_path: Path, timeout: int = 60) -> Path
 
     See references/dwg2bmp-headless-renderer.md for details.
     """
-    qcad_dir = os.path.expanduser("~/opt/qcad-3.32.7-pro-linux-qt6-x86_64")
+    qcad_dir = os.path.expanduser("~/opt/qcad")
     env = {**os.environ, "LD_LIBRARY_PATH": f"{qcad_dir}:{os.environ.get('LD_LIBRARY_PATH','')}"}
     # Kill any lingering QCAD instances
     subprocess.run(["pkill", "-9", "-f", "qcad"], capture_output=True)

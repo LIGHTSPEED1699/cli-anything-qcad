@@ -173,7 +173,7 @@ T4→T7: dy = −1.25 (verified by user). Terminal numbers 7/8/9 are Wlltermn bl
 - BLOCK definitions STRIPPED (314 KB → 76 KB)
 - Modelspace entities PRESERVED
 - Handle reassignment warnings BENIGN
-- Title-block revision rows LOST (no headless fix in QCAD 3.32.7)
+- Title-block revision rows LOST (no headless fix in QCAD)
 
 ## Verification Checklist
 

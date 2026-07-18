@@ -352,7 +352,7 @@ class DXFEditor:
         Uses xvfb-run --server-num to avoid any window appearing on the user's
         real display, plus timeout to prevent indefinite hangs.
         """
-        oda = "/home/hongbin/.hermes/hermes-agent/squashfs-root/usr/bin/ODAFileConverter"
+        oda = "~/.hermes/hermes-agent/squashfs-root/usr/bin/ODAFileConverter"
         if not os.path.exists(oda):
             print(f"ERROR: ODAFileConverter not found: {oda}")
             return False

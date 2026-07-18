@@ -76,7 +76,7 @@ If the annotation is too ambiguous, set task_type to "unknown" and confidence be
 
 def _vlm_parse_annotation(text: str, context: str = "",
                             model: str = "gemma4:31b-cloud",
-                            base_url: str = "http://192.168.2.15:11434",
+                            base_url: str = "http://localhost:11434",
                             timeout: int = 60) -> Dict[str, Any]:
     """Ask a local Ollama VLM to parse an ambiguous annotation."""
     payload = {
@@ -388,7 +388,7 @@ def _extract_change_value(text: str) -> Tuple[Optional[str], Optional[str]]:
 
 def _infer_task_from_annotation(annot: Dict[str, Any], affine: Optional[Any],
                                   vlm_model: str = "gemma4:31b-cloud",
-                                  vlm_base_url: str = "http://192.168.2.15:11434",
+                                  vlm_base_url: str = "http://localhost:11434",
                                   vlm_timeout: int = 60) -> List[Task]:
     """Combine rule-based classification and VLM parsing into one or more Tasks."""
     text = annot.get("text", "").strip()
@@ -580,10 +580,10 @@ class MarkupPlanner:
     """Plan DWG modifications from PDF markup annotations."""
 
     def __init__(self, vlm_model: str = "gemma4:31b-cloud",
-                 vlm_base_url: str = "http://192.168.2.15:11434",
+                 vlm_base_url: str = "http://localhost:11434",
                  vlm_timeout: int = 60):
         self.vlm_model = vlm_model or os.environ.get("VISION_MODEL", "gemma4:31b-cloud")
-        self.vlm_base_url = vlm_base_url or os.environ.get("OLLAMA_URL", "http://192.168.2.15:11434")
+        self.vlm_base_url = vlm_base_url or os.environ.get("OLLAMA_URL", "http://localhost:11434")
         self.vlm_timeout = vlm_timeout
 
     def plan(self, pdf_path: str, dxf_path: str) -> List[Task]:

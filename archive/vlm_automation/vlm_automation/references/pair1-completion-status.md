@@ -5,7 +5,7 @@
 ## Final Deliverable
 
 File: `1_FINAL_v11.dwg`  
-Path: `/home/hongbin/.hermes/kanban/workspaces/testfiles_2026.05.07/1_FINAL_v11.dwg`  
+Path: `~/.hermes/kanban/workspaces/testfiles_2026.05.07/1_FINAL_v11.dwg`  
 Size: 46,785 bytes  
 
 ## What Was Done

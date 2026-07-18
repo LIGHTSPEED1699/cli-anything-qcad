@@ -11,7 +11,7 @@ def run_pydeps():
     result = subprocess.run(
         ["pydeps", "cli_anything", "--only", "cli_anything", "--show-deps",
          "--max-bacon", "2", "--cluster", "--no-dot"],
-        capture_output=True, text=True, cwd="/home/hongbin/Repos/cli-anything-qcad"
+        capture_output=True, text=True, cwd="."
     )
     return json.loads(result.stdout)
 

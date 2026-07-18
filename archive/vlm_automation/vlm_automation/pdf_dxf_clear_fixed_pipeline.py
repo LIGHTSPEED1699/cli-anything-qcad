@@ -129,7 +129,7 @@ def find_text_entities_in_bbox(msp, bbox, annot_text, margin=0.2,
 
 def run_pdf_to_dxf_clear(pdf_path: Path, dxf_in: Path, dxf_out: Path,
                          margin: float = 0.2,
-                         qcad_bin: Path = Path("/home/hongbin/opt/qcad-3.32.7-pro-linux-qt6-x86_64/qcad-bin")):
+                         qcad_bin: Path = Path(os.environ.get("QCAD_DIR", "qcad") + "/qcad-bin")):
     import ezdxf, subprocess, os, textwrap, tempfile
 
     annots = extract_annotations(pdf_path)
@@ -277,7 +277,7 @@ def run_pdf_to_dxf_clear(pdf_path: Path, dxf_in: Path, dxf_out: Path,
 
 if __name__ == "__main__":
     import sys
-    DATA_DIR = Path("/home/hongbin/.hermes/kanban/workspaces/testfiles_2026.05.07")
+    DATA_DIR = Path("~/.hermes/kanban/workspaces/testfiles_2026.05.07")
     PDF = DATA_DIR / "1.pdf"
     DXF_IN = DATA_DIR / "1.dxf"
     DXF_OUT = DATA_DIR / "1_MODIFIED_FIXED.dxf"

@@ -186,7 +186,7 @@ whenever a new VLM drops or when re-validating an existing one.
 - **#84:** Ollama Cloud is GPU-time-billed, not token-billed. "Token cost"
   framing is misleading. Use the projection table above.
 - **#85:** dwg2bmp is the only working headless DWG rasterizer. Use
-  `LD_LIBRARY_PATH=$HOME/opt/qcad-3.32.7-pro-linux-qt6-x86_64:$LD_LIBRARY_PATH`
+  `LD_LIBRARY_PATH=$HOME/opt/qcad:$LD_LIBRARY_PATH`
   and `timeout 60 ./dwg2bmp -f -a -o output.png input.dwg`. See
   `references/dwg2bmp-headless-renderer.md`.
 - **#86:** ezdxf+matplotlib produces blank PNGs (1 unique color) for DXFs

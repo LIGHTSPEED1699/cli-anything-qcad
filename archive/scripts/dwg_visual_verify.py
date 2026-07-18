@@ -17,7 +17,7 @@ Usage:
     python3 dwg_visual_verify.py pair3_clone.dwg --pair3
 
     # Use a different model:
-    python3 dwg_visual_verify.py drawing.dwg --model qwen2.5vl --ollama-url http://192.168.2.15:11434
+    python3 dwg_visual_verify.py drawing.dwg --model qwen2.5vl --ollama-url http://localhost:11434
 """
 import argparse
 import base64
@@ -44,7 +44,7 @@ def render_to_png(dwg_path: str, out_png: str, width: int = 2000, height: int = 
 
     # Find dwg2bmp
     qcad_dirs = [
-        Path.home() / "opt/qcad-3.32.7-pro-linux-qt6-x86_64",
+        Path.home() / "opt/qcad",
         Path.home() / "opt/qcad-3.32.5-pro-linux-qt6-x86_64",
     ]
     exe = None
@@ -90,7 +90,7 @@ def render_to_png(dwg_path: str, out_png: str, width: int = 2000, height: int = 
 
 
 def ask_vlm(png_path: str, question: str,
-            ollama_url: str = "http://192.168.2.15:11434",
+            ollama_url: str = "http://localhost:11434",
             model: str = "gemma4:31b-cloud") -> dict:
     """Send PNG to Ollama vision model and return structured answer."""
     with open(png_path, "rb") as f:
@@ -152,7 +152,7 @@ def main():
                         help="Run all Pair 3 clone verification questions")
     parser.add_argument("--model", default="gemma4:31b-cloud",
                         help="Ollama vision model")
-    parser.add_argument("--ollama-url", default="http://192.168.2.15:11434",
+    parser.add_argument("--ollama-url", default="http://localhost:11434",
                         help="Ollama endpoint URL")
     parser.add_argument("--output-png", default=None,
                         help="Save rendered PNG to this path")

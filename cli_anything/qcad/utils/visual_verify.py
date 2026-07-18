@@ -14,7 +14,7 @@ class QcadRenderer:
     """Render DWG/DXF to PNG using QCAD's dwg2bmp CLI."""
 
     def __init__(self, qcad_dir: Optional[str] = None):
-        self.qcad_dir = Path(qcad_dir) if qcad_dir else Path('/home/hongbin/opt/qcad-3.32.7-pro-linux-qt6-x86_64')
+        self.qcad_dir = Path(qcad_dir) if qcad_dir else Path(os.environ.get('QCAD_DIR', 'qcad'))
         self.dwg2bmp = self.qcad_dir / 'dwg2bmp'
         self._converter = None
 
@@ -114,7 +114,7 @@ class QcadVlmVerifier:
             qcad_dir = str(Path(qcad_bin).parent)
         self.renderer = QcadRenderer(qcad_dir=qcad_dir)
         self.model = model or os.environ.get("VISION_MODEL", "gemma4:31b-cloud")
-        self.base_url = os.environ.get("OLLAMA_URL", "http://192.168.2.15:11434")
+        self.base_url = os.environ.get("OLLAMA_URL", "http://localhost:11434")
 
     def verify(self, dwg_path: str, question: str) -> dict:
         png_path = str(Path(dwg_path).with_suffix('')) + '_vlm.png'

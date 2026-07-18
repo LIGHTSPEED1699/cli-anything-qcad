@@ -13,10 +13,10 @@ import subprocess
 from pathlib import Path
 
 # Add scripts to path
-SCRIPTS_DIR = Path("/home/hongbin/openclaw-shared/QCAD-VLM-automation/scripts")
-TEST_FILES_DIR = Path("/home/hongbin/openclaw-shared/QCAD-VLM-automation/test-files")
-INBOUND_PDF = Path("/home/hongbin/.openclaw/media/inbound/ff9ed528-9638-4ad8-aeb7-8c7e97d0a7dd.pdf")
-WORKSPACE = Path("/home/hongbin/.hermes/kanban/workspaces/t_1345ccb9")
+SCRIPTS_DIR = Path("~/openclaw-shared/QCAD-VLM-automation/scripts")
+TEST_FILES_DIR = Path("~/openclaw-shared/QCAD-VLM-automation/test-files")
+INBOUND_PDF = Path("~/.openclaw/media/inbound/ff9ed528-9638-4ad8-aeb7-8c7e97d0a7dd.pdf")
+WORKSPACE = Path("~/.hermes/kanban/workspaces/t_1345ccb9")
 
 def log_step(num, name, status, detail=""):
     icon = "✅" if status == "PASS" else "❌" if status == "FAIL" else "⚠️"

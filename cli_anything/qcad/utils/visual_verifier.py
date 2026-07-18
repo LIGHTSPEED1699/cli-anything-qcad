@@ -7,7 +7,7 @@ operations run in the background via cua-driver's AT-SPI path.
 Requires:
   - cua-driver installed (hermes computer-use install)
   - ImageMagick import (sudo apt install imagemagick)
-  - QCAD Pro (Qt6) at ~/opt/qcad-3.32.7-pro-linux-qt6-x86_64/qcad
+  - QCAD Pro (Qt6) at ~/opt/qcad/qcad
 """
 import base64
 import json
@@ -40,7 +40,7 @@ class QcadVlmVerifier:
         screenshot_dir: str = "/tmp/qcad_vlm_verify",
     ):
         self.qcad_bin = qcad_bin
-        self.ollama_url = ollama_url or os.environ.get("OLLAMA_URL", "http://192.168.2.15:11434")
+        self.ollama_url = ollama_url or os.environ.get("OLLAMA_URL", "http://localhost:11434")
         self.model = model or os.environ.get("VISION_MODEL", "gemma4:31b-cloud")
         self.window_title = window_title
         self.screenshot_dir = Path(screenshot_dir)
@@ -57,7 +57,7 @@ class QcadVlmVerifier:
             return self.qcad_bin
         candidates = [
             shutil.which("qcad"),
-            str(Path.home() / "opt/qcad-3.32.7-pro-linux-qt6-x86_64/qcad"),
+            str(Path.home() / "opt/qcad/qcad"),
         ]
         for c in candidates:
             if c and Path(c).exists():

@@ -62,7 +62,7 @@ class DWGMarkupPipeline:
         vision_model: str = "qwen2.5vl:latest",
         text_model: str = "qwen3.5:9b",
         ollama_url: str = "http://localhost:11434",
-        qcad_path: str = "/home/hongbin/opt/qcad-3.32.7-pro-linux-qt6-x86_64/qcad",
+        qcad_path: str = os.environ.get("QCAD_DIR", "qcad") + "/qcad",
         window_name: str = "QCAD",
         max_steps: int = 10,
         step_delay: float = 2.0,
@@ -516,7 +516,7 @@ def main():
     parser.add_argument("--ollama-url", default="http://localhost:11434",
                         help="Ollama API URL")
     parser.add_argument("--qcad-path",
-                        default="/home/hongbin/opt/qcad-3.32.6-trial-linux-qt5.14-x86_64/qcad",
+                        default=os.environ.get("QCAD_DIR", "qcad") + "/qcad",
                         help="Path to QCAD executable")
     parser.add_argument("--window-name", default="QCAD",
                         help="Window name to search for")

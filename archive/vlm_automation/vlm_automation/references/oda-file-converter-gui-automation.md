@@ -126,7 +126,7 @@ from pathlib import Path
 
 src_dwg = Path("pairs/pair4/original/4.dwg")
 input_folder = Path("/tmp/oda_input")   # Pre-configured in ODA GUI
-output_folder = Path("/home/hongbin/Downloads")  # Pre-configured in ODA GUI
+output_folder = Path("~/Downloads")  # Pre-configured in ODA GUI
 shutil.copy(src_dwg, input_folder / "4.dwg")
 
 # Launch ODA (it will see 4.dwg in the input folder)

@@ -34,7 +34,7 @@ from vlm_instruction_parser import InstructionParser
 # ------------------------------------------------------------------
 # Configuration
 # ------------------------------------------------------------------
-DATA_DIR = Path("/home/hongbin/.hermes/kanban/workspaces/testfiles_2026.05.07")
+DATA_DIR = Path("~/.hermes/kanban/workspaces/testfiles_2026.05.07")
 OUT_DIR = DATA_DIR / "pipeline_output"
 OUT_DIR.mkdir(exist_ok=True)
 

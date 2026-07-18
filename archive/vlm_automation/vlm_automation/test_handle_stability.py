@@ -26,7 +26,7 @@ import tempfile
 import textwrap
 
 
-QCADDIR_DEFAULT = os.path.expanduser("$HOME/opt/qcad-3.32.7-pro-linux-qt6-x86_64")
+QCADDIR_DEFAULT = os.path.expanduser("$HOME/opt/qcad")
 
 QCAD_SCRIPT = textwrap.dedent(r'''
     include("scripts/library.js");

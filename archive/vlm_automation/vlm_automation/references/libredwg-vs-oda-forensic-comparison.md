@@ -95,11 +95,11 @@ Open `CONTROL.dwg` in TrueView/AutoCAD. If it also triggers Recover, LibreDWG's 
 
 ### Path C — QCAD Pro Headless (Fully Validated 2026-05-09)
 
-**Prerequisites:** QCAD Pro 3.32.7 Qt6, valid Pro license, `$HOME/opt/qcad-3.32.7-pro-linux-qt6-x86_64/`
+**Prerequisites:** QCAD Pro Qt6, valid Pro license, `$HOME/opt/qcad/`
 
 **Full invocation (must use `qcad-bin`, NOT the `qcad` wrapper):**
 ```bash
-QCADDIR="$HOME/opt/qcad-3.32.7-pro-linux-qt6-x86_64"
+QCADDIR="$HOME/opt/qcad"
 export QT_QPA_PLATFORM=offscreen
 export LD_LIBRARY_PATH="$QCADDIR:$QCADDIR/plugins"
 

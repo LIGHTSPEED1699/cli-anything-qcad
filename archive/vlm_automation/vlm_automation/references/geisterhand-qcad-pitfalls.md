@@ -108,7 +108,7 @@ The `vision_analyze` tool accepts local file URLs in the `image_url` field:
 ## Session Artifacts
 
 - `geisterhand.service`: systemd user service at `~/.config/systemd/user/geisterhand.service`
-- QCAD Pro path: `~/opt/qcad-3.32.7-pro-linux-qt6-x86_64/`
+- QCAD Pro path: `~/opt/qcad/`
 - Test script: `~/openclaw-shared/test_qcad_automation.sh`
 - Python example: `~/openclaw-shared/qcad_automation_example.py`
 - Documentation: `~/openclaw-shared/geisterhand-qcad-automation.md`

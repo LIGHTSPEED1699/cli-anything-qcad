@@ -36,7 +36,7 @@ def render_dxf_to_png(dxf_path, png_path, figsize=(24, 16), dpi=200):
 import requests, base64
 
 def vlm_analyze_drawing(png_path, prompt, model="qwen2.5vl:latest",
-                         url="http://192.168.2.15:11434/api/generate", timeout=120):
+                         url="http://localhost:11434/api/generate", timeout=120):
     with open(png_path, "rb") as f:
         img_data = base64.b64encode(f.read()).decode("utf-8")
     payload = {
@@ -114,7 +114,7 @@ python3 scripts/qcad_vlm_verifier.py drawing.dwg --question "..." --keep-qcad
 
 ### Environment
 - `QCAD_BIN` — path to `qcad` launcher (not `qcad-bin`; wrapper handles Qt platform)
-- `OLLAMA_URL` — default `http://192.168.2.15:11434`
+- `OLLAMA_URL` — default `http://localhost:11434`
 - `VISION_MODEL` — default `qwen2.5vl:latest`
 - `GEISTERHAND_URL` — default `http://127.0.0.1:7680`
 - `DISPLAY`, `XAUTHORITY`, `DBUS_SESSION_BUS_ADDRESS` — must be set for non-interactive shells

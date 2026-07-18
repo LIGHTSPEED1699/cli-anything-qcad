@@ -2,7 +2,7 @@
 
 Date: 2026-05-13
 Context: VLM-CAD automation pipeline, Pair 3 entity duplication via cloud polygon selection.
-File: `3_cloud.pdf` in `/home/hongbin/.hermes/kanban/workspaces/testfiles_2026.05.07/`
+File: `3_cloud.pdf` in `~/.hermes/kanban/workspaces/testfiles_2026.05.07/`
 
 ## Problem Statement
 

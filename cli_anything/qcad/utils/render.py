@@ -18,8 +18,8 @@ class QcadRenderer:
     def _find_qcad(self) -> Optional[str]:
         candidates = [
             shutil.which("qcad"),
-            str(Path.home() / "opt/qcad-3.32.7-pro-linux-qt6-x86_64/qcad"),
-            str(Path.home() / "opt/qcad-3.32.7-pro-linux-qt6-x86_64/qcad-bin"),
+            str(Path.home() / "opt/qcad/qcad"),
+            str(Path.home() / "opt/qcad/qcad-bin"),
         ]
         for c in candidates:
             if c and Path(c).exists():

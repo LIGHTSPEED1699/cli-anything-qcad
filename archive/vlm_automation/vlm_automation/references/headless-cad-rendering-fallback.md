@@ -7,7 +7,7 @@ The original claim "the only reliable headless rendering path in this environmen
 `dwg2bmp` produces true-color, true-width, block-aware renders that match what the user sees in QCAD's window — and it runs headless in 3 seconds. **This is the renderer you should use for VLM verification.**
 
 ```bash
-QCAD=/home/hongbin/opt/qcad-3.32.7-pro-linux-qt6-x86_64
+QCAD=<qcad-install-dir>
 LD_LIBRARY_PATH=$QCAD:$LD_LIBRARY_PATH $QCAD/dwg2bmp -f -a -o /tmp/out.png /path/in.dwg
 ```
 

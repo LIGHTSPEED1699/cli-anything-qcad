@@ -1,13 +1,13 @@
 # QCAD Pro Headless ECMAScript Automation
 
 Session: 2026-05-08
-Status: Validated on QCAD Pro 3.32.7 Qt6, Ubuntu 24.04
+Status: Validated on QCAD Pro Qt6, Ubuntu 24.04
 
-**Note (2026-06-10):** This reference documents QCAD Pro 3.28/Qt5 era APIs. **QCAD Pro 3.32.7 Qt6 has a completely different headless ECMAScript environment** — `RApplication`, `RDocumentInterface`, `Document`, and `RGlobal` are ALL undefined. Headless file I/O is NOT viable in the Qt6 build. See `references/qcad-headless-api-limitations-qt6.md` for the full forensic analysis and workaround options.
+**Note (2026-06-10):** This reference documents QCAD Pro 3.28/Qt5 era APIs. **QCAD Pro Qt6 has a completely different headless ECMAScript environment** — `RApplication`, `RDocumentInterface`, `Document`, and `RGlobal` are ALL undefined. Headless file I/O is NOT viable in the Qt6 build. See `references/qcad-headless-api-limitations-qt6.md` for the full forensic analysis and workaround options.
 
 ## Layer Manipulation (Thaw All Layers)
 
-**Qt5 only. Does NOT work in QCAD Pro 3.32.7 Qt6 headless mode.**
+**Qt5 only. Does NOT work in QCAD Pro Qt6 headless mode.**
 
 ```javascript
 // After di.importFile(inputFile) succeeds:
@@ -63,7 +63,7 @@ di.applyOperation(op);
 ## Correct Launcher Pattern
 
 ```bash
-QCADDIR="$HOME/opt/qcad-3.32.7-pro-linux-qt6-x86_64"
+QCADDIR="$HOME/opt/qcad"
 export QT_QPA_PLATFORM=offscreen
 export QT_QPA_PLATFORMTHEME=""
 export LD_LIBRARY_PATH="$QCADDIR:$QCADDIR/plugins"
@@ -143,8 +143,8 @@ di.applyOperation(ao);
 
 | Path | Description |
 |------|-------------|
-| `$HOME/opt/qcad-3.32.7-pro-linux-qt6-x86_64/qcad-bin` | Real binary |
-| `$HOME/opt/qcad-3.32.7-pro-linux-qt6-x86_64/qcad` | Wrapper script (BROKEN for headless) |
-| `$HOME/opt/qcad-3.32.7-pro-linux-qt6-x86_64/scripts/library.js` | Core utility includes |
-| `$HOME/opt/qcad-3.32.7-pro-linux-qt6-x86_64/scripts/Tools/arguments.js` | Argument parser (`testArgument()`) |
+| `$HOME/opt/qcad/qcad-bin` | Real binary |
+| `$HOME/opt/qcad/qcad` | Wrapper script (BROKEN for headless) |
+| `$HOME/opt/qcad/scripts/library.js` | Core utility includes |
+| `$HOME/opt/qcad/scripts/Tools/arguments.js` | Argument parser (`testArgument()`) |
 | `$HOME/.config/QCAD/QCAD3.conf` | User preferences |

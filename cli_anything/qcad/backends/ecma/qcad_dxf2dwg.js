@@ -4,7 +4,7 @@
  * and you only need a clean DWG export via QCAD's ODA engine.
  *
  * Usage:
- *   export QCADDIR="$HOME/opt/qcad-3.32.7-pro-linux-qt6-x86_64"
+ *   export QCADDIR="$HOME/opt/qcad"
  *   export QT_QPA_PLATFORM=offscreen
  *   export LD_LIBRARY_PATH="$QCADDIR:$QCADDIR/plugins"
  *   "$QCADDIR/qcad-bin" -no-gui -platform offscreen -allow-multiple-instances \

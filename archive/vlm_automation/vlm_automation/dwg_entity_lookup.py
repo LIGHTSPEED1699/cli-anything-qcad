@@ -12,6 +12,7 @@ This avoids DXF conversion loss by using QCAD's native DWG reader.
 Requires QCAD Professional (or trial) with DWG plugin.
 """
 
+import os
 import sys
 import json
 import re
@@ -46,10 +47,10 @@ class DwgEntity:
 class DwgEntityIndex:
     """Index DWG entities for fast text search (same interface as DxfEntityIndex)."""
 
-    QCAD_EXE = "/home/hongbin/opt/qcad-3.32.7-pro-linux-qt6-x86_64/qcad"
-    QCAD_BIN = "/home/hongbin/opt/qcad-3.32.7-pro-linux-qt6-x86_64/qcad-bin"
-    QCAD_DIR = "/home/hongbin/opt/qcad-3.32.7-pro-linux-qt6-x86_64"
-    SCRIPT_PATH = "/home/hongbin/.openclaw/workspace/vlm-gui-automation/dwg_entity_export.js"
+    QCAD_EXE = os.environ.get("QCAD_DIR", "qcad") + "/qcad"
+    QCAD_BIN = os.environ.get("QCAD_DIR", "qcad") + "/qcad-bin"
+    QCAD_DIR = os.environ.get("QCAD_DIR", "qcad")
+    SCRIPT_PATH = "~/.openclaw/workspace/vlm-gui-automation/dwg_entity_export.js"
 
     def __init__(self, dwg_path: str):
         self.dwg_path = dwg_path

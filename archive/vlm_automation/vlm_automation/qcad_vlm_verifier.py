@@ -32,8 +32,8 @@ os.environ.setdefault("XAUTHORITY", "/run/user/1000/gdm/Xauthority")
 os.environ.setdefault("DBUS_SESSION_BUS_ADDRESS", "unix:path=/run/user/1000/bus")
 
 QCAD_BIN = os.environ.get("QCAD_BIN",
-    os.path.expanduser("~/opt/qcad-3.32.7-pro-linux-qt6-x86_64/qcad"))
-OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://192.168.2.15:11434")
+    os.path.expanduser("~/opt/qcad/qcad"))
+OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
 VISION_MODEL = os.environ.get("VISION_MODEL", "gemma4:31b-cloud")
 
 

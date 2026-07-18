@@ -211,7 +211,7 @@ The previous fallback (matplotlib + ezdxf render of LibreDWG-converted DXF) prod
 **Fix**: Use QCAD's bundled `dwg2bmp` CLI. It's headless, no X11 required, accepts DWG directly, and produces the same true-color render you'd see in QCAD's GUI. See `references/dwg2bmp-headless-renderer.md`.
 
 ```bash
-QCAD=/home/hongbin/opt/qcad-3.32.7-pro-linux-qt6-x86_64
+QCAD=<qcad-install-dir>
 LD_LIBRARY_PATH=$QCAD:$LD_LIBRARY_PATH $QCAD/dwg2bmp -f -a -o /tmp/out.png /path/in.dwg
 ```
 

@@ -1,6 +1,6 @@
 # QCAD Pro Headless ECMAScript API Limitations (2026-06-10)
 
-**QCAD Pro 3.32.7 Qt6 build — headless ECMAScript automation is NOT viable for file I/O.**
+**QCAD Pro Qt6 build — headless ECMAScript automation is NOT viable for file I/O.**
 
 ## What Is Missing
 
@@ -75,11 +75,11 @@ var outputFile = args[args.length - 1];
 
 ## Implication
 
-**QCAD headless ECMAScript cannot be used for DWG↔DXF conversion in QCAD Pro 3.32.7 Qt6.** The `-no-gui -platform offscreen` launch mode initializes the scripting engine but not the high-level application APIs.
+**QCAD headless ECMAScript cannot be used for DWG↔DXF conversion in QCAD Pro Qt6.** The `-no-gui -platform offscreen` launch mode initializes the scripting engine but not the high-level application APIs.
 
 ### Previous Documentation Was Wrong
 
-The `references/qcad-pro-ecmascript-automation.md` reference documented `RDocumentInterface.importFile()` and `RDocumentInterface.exportFile()` as working. This was based on earlier QCAD Pro 3.28/Qt5 builds. **In QCAD Pro 3.32.7/Qt6, these APIs are absent in headless mode.**
+The `references/qcad-pro-ecmascript-automation.md` reference documented `RDocumentInterface.importFile()` and `RDocumentInterface.exportFile()` as working. This was based on earlier QCAD Pro 3.28/Qt5 builds. **In QCAD Pro/Qt6, these APIs are absent in headless mode.**
 
 ## Workaround Options
 
@@ -93,7 +93,7 @@ The `references/qcad-pro-ecmascript-automation.md` reference documented `RDocume
 
 ## Bottom Line
 
-For DWG↔DXF conversion on QCAD Pro 3.32.7 Qt6:
+For DWG↔DXF conversion on QCAD Pro Qt6:
 - **QCAD headless ECMAScript is NOT an option** — missing core APIs
 - **ODA File Converter GUI is the only reliable path** — but requires human-in-the-loop for the Start button
 - **LibreDWG is acceptable for inspection only** — never for production pipelines with block data

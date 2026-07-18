@@ -1,4 +1,4 @@
-#!/home/hongbin/.openclaw/workspace/vlm-gui-automation/venv/bin/python3
+#!/usr/bin/env python3
 """
 QCAD/LibreCAD VLM-Based GUI Automation Agent
 

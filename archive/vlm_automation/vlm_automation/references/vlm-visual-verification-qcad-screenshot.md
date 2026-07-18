@@ -35,9 +35,9 @@ Also synced to: `vlm-gui-automation/scripts/qcad_vlm_verifier.py` (GitHub repo)
 ## Environment Variables
 
 ```python
-QCAD_BIN = "~/opt/qcad-3.32.7-pro-linux-qt6-x86_64/qcad"
+QCAD_BIN = "~/opt/qcad/qcad"
 GEISTERHAND_URL = "http://127.0.0.1:7680"
-OLLAMA_URL = "http://192.168.2.15:11434"
+OLLAMA_URL = "http://localhost:11434"
 VISION_MODEL = "qwen2.5vl:latest"
 ```
 
