@@ -69,46 +69,71 @@ class DwgConverter:
         raise RuntimeError("No DXF→DWG converter available (need QCAD Pro or ODA File Converter)")
 
     def _oda_dwg_to_dxf(self, dwg_path: str, dxf_path: str) -> bool:
-        input_dir = Path(dwg_path).parent
-        output_dir = Path(dxf_path).parent
-        # ODA File Converter operates on entire directories — ensure we don't
-        # pass root directories or paths without a parent to avoid processing
-        # unintended files or producing ".dxf" with empty basename.
+        # ODA File Converter operates on entire directories and refuses to
+        # use the same dir for input and output ("Output folder must be
+        # different than input folder"). When input and output share a
+        # directory, run ODA with a sibling temp output dir, then move the
+        # generated file into place.
         if not dwg_path.strip() or not Path(dwg_path).name:
             raise ValueError(f"Invalid dwg_path: {dwg_path!r}")
         if not dxf_path.strip():
             raise ValueError(f"Invalid dxf_path: {dxf_path!r}")
-        # Guard: Path.stem returns empty string for '.'-prefixed filenames
         src_stem = Path(dwg_path).stem
         if not src_stem:
             raise ValueError(f"dwg_path {dwg_path!r} has empty stem (name starts with dot?)")
-        subprocess.run(
-            [self.oda_converter, str(input_dir), str(output_dir), self.version, "DXF", "0", "1"],
-            check=True, capture_output=True, text=True,
-        )
-        generated = output_dir / f"{src_stem}.dxf"
-        if generated.exists():
-            generated.rename(dxf_path)
-            return True
-        return False
+        input_dir = Path(dwg_path).parent
+        output_dir = Path(dxf_path).parent
+        tmp_out = None
+        if output_dir.resolve() == input_dir.resolve():
+            tmp_out = input_dir / "_oda_out"
+            tmp_out.mkdir(parents=True, exist_ok=True)
+            oda_out_dir = tmp_out
+        else:
+            oda_out_dir = output_dir
+        try:
+            subprocess.run(
+                [self.oda_converter, str(input_dir), str(oda_out_dir),
+                 self.version, "DXF", "0", "1"],
+                check=True, capture_output=True, text=True,
+            )
+            generated = oda_out_dir / f"{src_stem}.dxf"
+            if generated.exists():
+                shutil.move(str(generated), dxf_path)
+                return True
+            return False
+        finally:
+            if tmp_out and tmp_out.exists():
+                shutil.rmtree(tmp_out, ignore_errors=True)
 
     def _oda_dxf_to_dwg(self, dxf_path: str, dwg_path: str) -> bool:
-        input_dir = Path(dxf_path).parent
-        output_dir = Path(dwg_path).parent
         if not dxf_path.strip() or not Path(dxf_path).name:
             raise ValueError(f"Invalid dxf_path: {dxf_path!r}")
         src_stem = Path(dxf_path).stem
         if not src_stem:
             raise ValueError(f"dxf_path {dxf_path!r} has empty stem (name starts with dot?)")
-        subprocess.run(
-            [self.oda_converter, str(input_dir), str(output_dir), self.version, "DWG", "0", "1"],
-            check=True, capture_output=True, text=True,
-        )
-        generated = output_dir / f"{src_stem}.dwg"
-        if generated.exists():
-            generated.rename(dwg_path)
-            return True
-        return False
+        input_dir = Path(dxf_path).parent
+        output_dir = Path(dwg_path).parent
+        tmp_out = None
+        if output_dir.resolve() == input_dir.resolve():
+            tmp_out = input_dir / "_oda_out"
+            tmp_out.mkdir(parents=True, exist_ok=True)
+            oda_out_dir = tmp_out
+        else:
+            oda_out_dir = output_dir
+        try:
+            subprocess.run(
+                [self.oda_converter, str(input_dir), str(oda_out_dir),
+                 self.version, "DWG", "0", "1"],
+                check=True, capture_output=True, text=True,
+            )
+            generated = oda_out_dir / f"{src_stem}.dwg"
+            if generated.exists():
+                shutil.move(str(generated), dwg_path)
+                return True
+            return False
+        finally:
+            if tmp_out and tmp_out.exists():
+                shutil.rmtree(tmp_out, ignore_errors=True)
 
     def _qcad_dwg_to_dxf(self, dwg_path: str, dxf_path: str) -> bool:
         safe_dwg = dwg_path.replace("'", "\\'")
