@@ -237,8 +237,14 @@ class MarkupPipeline:
 
         try:
             result = engine.run(input_dxf, params, output_dxf)
+            # Engine may return success=False without writing output_dxf
+            # (e.g. missing parameters).  Ensure a checkpoint exists so the
+            # pipeline can continue to the next task.
+            if not Path(output_dxf).exists():
+                shutil.copy2(input_dxf, output_dxf)
+            engine_success = result.get("success", True) if isinstance(result, dict) else True
             return {"task_id": task.task_id, "task_type": task.task_type,
-                    "success": True, **result}
+                    "success": engine_success, **result}
         except Exception as e:
             shutil.copy2(input_dxf, output_dxf)
             return {"task_id": task.task_id, "task_type": task.task_type,

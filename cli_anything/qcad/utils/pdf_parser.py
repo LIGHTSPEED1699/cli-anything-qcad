@@ -150,6 +150,180 @@ class PdfAnnotationParser:
         ys = [p[1] for p in transformed]
         return fitz.Rect(min(xs), min(ys), max(xs), max(ys))
 
+    # ── Flattened-vector markup detection ───────────────────────────────
+    # Some PDF markups are exported/flattened: the clouds, arrows, and red
+    # instruction text are drawn as ordinary vector paths and text spans
+    # inside the page content stream, NOT as PDF annotation objects.
+    # page.annots() returns nothing for these files.  The methods below
+    # detect red-coloured shapes and red text and synthesise the same
+    # annotation dicts the normal annotation path produces, so the planner
+    # can consume them without changes.
+
+    @staticmethod
+    def _is_red(color) -> bool:
+        """True if an RGB color tuple is reddish (high R, low G/B)."""
+        if color is None:
+            return False
+        try:
+            r, g, b = color[0], color[1], color[2]
+        except (TypeError, IndexError):
+            return False
+        return r > 0.8 and g < 0.35 and b < 0.35
+
+    @staticmethod
+    def _is_red_text_color(color_int: int) -> bool:
+        """PyMuPDF text spans store color as an int (0xRRGGBB)."""
+        if color_int is None:
+            return False
+        r = (color_int >> 16) & 0xFF
+        g = (color_int >> 8) & 0xFF
+        b = color_int & 0xFF
+        return r > 200 and g < 90 and b < 90
+
+    @classmethod
+    def _detect_red_shapes(cls, page: "fitz.Page") -> List[Dict[str, Any]]:
+        """Find red vector paths and classify them as rectangles or arrows."""
+        shapes: List[Dict[str, Any]] = []
+        for d in page.get_drawings():
+            if not cls._is_red(d.get("color")):
+                continue
+            r = d["rect"]
+            items = d["items"]
+            # Collect all line-segment points
+            pts: List[Tuple[float, float]] = []
+            has_rect = False
+            for it in items:
+                op = it[0]
+                if op == "re":
+                    has_rect = True
+                for k in range(1, len(it)):
+                    v = it[k]
+                    if isinstance(v, fitz.Point):
+                        pts.append((v.x, v.y))
+                    elif isinstance(v, fitz.Rect):
+                        pts.append((v.x0, v.y0))
+                        pts.append((v.x1, v.y1))
+            if has_rect:
+                shapes.append({
+                    "type": "rectangle",
+                    "rect": (r.x0, r.y0, r.x1, r.y1),
+                    "points": pts,
+                })
+            elif len(pts) >= 4:
+                # An arrow is typically 4+ points forming a line + arrowhead.
+                # Heuristic: not closed, spans a decent distance (>15pt).
+                span = max(r.width, r.height)
+                if span > 10:
+                    shapes.append({
+                        "type": "arrow",
+                        "rect": (r.x0, r.y0, r.x1, r.y1),
+                        "points": pts,
+                    })
+            elif len(pts) >= 2:
+                shapes.append({
+                    "type": "line",
+                    "rect": (r.x0, r.y0, r.x1, r.y1),
+                    "points": pts,
+                })
+        return shapes
+
+    @classmethod
+    def _detect_red_text(cls, page: "fitz.Page") -> List[Dict[str, Any]]:
+        """Find red-coloured text spans on the page."""
+        texts: List[Dict[str, Any]] = []
+        for block in page.get_text("dict").get("blocks", []):
+            for line in block.get("lines", []):
+                for span in line.get("spans", []):
+                    txt = span.get("text", "").strip()
+                    if not txt or len(txt) < 3:
+                        continue
+                    color = span.get("color", 0)
+                    if not cls._is_red_text_color(color):
+                        continue
+                    bbox = span["bbox"]
+                    texts.append({
+                        "text": txt,
+                        "rect": (bbox[0], bbox[1], bbox[2], bbox[3]),
+                    })
+        return texts
+
+    @staticmethod
+    def _rect_gap(a: Tuple, b: Tuple) -> float:
+        """Minimum gap between two (x0,y0,x1,y1) rects (0 if overlap)."""
+        dx = max(0, max(b[0] - a[2], a[0] - b[2]))
+        dy = max(0, max(b[1] - a[3], a[1] - b[3]))
+        return (dx * dx + dy * dy) ** 0.5
+
+    @classmethod
+    def _detect_flattened_markup(cls, page: "fitz.Page", page_num: int
+                                 ) -> List[Annotation]:
+        """Detect markup from flattened red vectors + red text.
+
+        Associates each red text instruction with the nearest red shape
+        (rectangle/arrow) within 80pt, emitting annotations in the same
+        format as the PDF-annotation path.  Standalone red shapes with no
+        associated text are treated as deletion regions (clouds/boxes).
+        """
+        shapes = cls._detect_red_shapes(page)
+        texts = cls._detect_red_text(page)
+        if not shapes and not texts:
+            return []
+
+        annotations: List[Annotation] = []
+        matched_shapes: set = set()
+
+        for ti, txt in enumerate(texts):
+            text_str = txt["text"]
+            txt_rect = txt["rect"]
+            # Find nearest red shape
+            best_gap = float("inf")
+            best_si = None
+            for si, shape in enumerate(shapes):
+                gap = cls._rect_gap(txt_rect, shape["rect"])
+                if gap <= 80 and gap < best_gap:
+                    best_gap = gap
+                    best_si = si
+
+            if best_si is not None:
+                matched_shapes.add(best_si)
+                shape = shapes[best_si]
+                verts = shape["points"]
+                target_bbox = list(shape["rect"])
+            else:
+                verts = None
+                target_bbox = list(txt_rect)
+
+            action_type, confidence = infer_action_type(text_str)
+            annotations.append(Annotation(
+                text=text_str,
+                target_bbox=target_bbox,
+                page=page_num,
+                annot_type="FlattenedText",
+                arrow_vertices=verts,
+                inferred_action=action_type,
+                confidence=confidence,
+            ))
+
+        # Standalone red shapes (no associated text) → deletion cloud
+        for si, shape in enumerate(shapes):
+            if si in matched_shapes:
+                continue
+            if shape["type"] != "rectangle":
+                continue
+            annotations.append(Annotation(
+                text="delete clouded objects",
+                target_bbox=list(shape["rect"]),
+                page=page_num,
+                annot_type="FlattenedShape",
+                arrow_vertices=shape["points"],
+                inferred_action=AnnotationType.DELETE.value,
+                confidence=0.7,
+            ))
+
+        return annotations
+
+    # ── Main parse entry point ──────────────────────────────────────────
+
     def parse(self, pdf_path: str) -> List[Dict[str, Any]]:
         annotations: List[Annotation] = []
         doc = fitz.open(pdf_path)
@@ -167,6 +341,16 @@ class PdfAnnotationParser:
                     line_annots.append(annot)
                 elif annot_type in ('Polygon', 'PolyLine'):
                     polygon_annots.append(annot)
+
+            # Fallback: if this page has zero PDF annotation objects but
+            # does contain red vector shapes or red text, the markup was
+            # exported as flattened content.  Detect it and synthesise
+            # annotations so the planner can proceed.
+            if not freetext_annots and not line_annots and not polygon_annots:
+                flattened = self._detect_flattened_markup(page, page_num)
+                if flattened:
+                    annotations.extend(flattened)
+                    continue  # next page — skip the annotation-based path
 
             # First pass: collect polygons with their own text if any
             for pg_annot in polygon_annots:
