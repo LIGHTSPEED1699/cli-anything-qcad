@@ -236,6 +236,63 @@ class ChangeTextValueEngine:
         }
 
 
+def _estimate_text_width(text: str, height: float) -> float:
+    """Rough text width estimate: chars * height * 0.6 (monospace-ish)."""
+    return len(text) * height * 0.6
+
+
+def _text_bbox(ent) -> Tuple[float, float, float, float]:
+    """Get (x1, y1, x2, y2) bounding box of a TEXT/MTEXT entity."""
+    x = ent.dxf.insert.x
+    y = ent.dxf.insert.y
+    if ent.dxftype() == "TEXT":
+        h = getattr(ent.dxf, "height", 2.5)
+        t = ent.dxf.text or ""
+        w = _estimate_text_width(t, h)
+    elif ent.dxftype() == "MTEXT":
+        h = getattr(ent.dxf, "char_height", None) or getattr(ent.dxf, "height", 2.5)
+        t = ent.text or ""
+        w = _estimate_text_width(t, h)
+    else:
+        return (x, y, x, y)
+    # TEXT origin is bottom-left; y is baseline
+    return (x, y, x + w, y + h)
+
+
+def _check_text_collision(all_texts: List[Any],
+                          cx: float, cy: float,
+                          label_width: float, label_height: float,
+                          exclude_text: str = "",
+                          margin: float = 0.5) -> bool:
+    """Check if a new text at (cx, cy) with given width/height would overlap
+    any existing TEXT/MTEXT entity. exclude_text skips entities matching
+    the label being placed (to avoid self-collision).
+
+    Returns True if a collision is detected, False if the position is clear.
+    """
+    # New label bbox (origin at bottom-left)
+    nx1, ny1 = cx - margin, cy - margin
+    nx2, ny2 = cx + label_width + margin, cy + label_height + margin
+
+    exclude_upper = exclude_text.strip().upper() if exclude_text else None
+
+    for ent in all_texts:
+        if exclude_upper:
+            et = (ent.dxf.text or "").strip().upper() if ent.dxftype() == "TEXT" else \
+                 (ent.text or "").strip().upper() if ent.dxftype() == "MTEXT" else ""
+            if et == exclude_upper:
+                continue
+        ex1, ey1, ex2, ey2 = _text_bbox(ent)
+        ex1 -= margin
+        ey1 -= margin
+        ex2 += margin
+        ey2 += margin
+        # Rectangle intersection test
+        if nx1 < ex2 and nx2 > ex1 and ny1 < ey2 and ny2 > ey1:
+            return True
+    return False
+
+
 class AddTextLabelEngine:
     """Add a new TEXT/MTEXT label at a specified location, matching nearby style.
 
@@ -328,17 +385,28 @@ class AddTextLabelEngine:
         The X offset defaults to the target text height (placing the label
         just to the left of the wire number), but can be overridden via
         parameters["x_offset"].
+
+        **Collision detection:** Before placing a label, scans for existing
+        TEXT/MTEXT entities whose bounding boxes would overlap the proposed
+        position. If a collision is found, tries alternative offsets (left,
+        right, above, below) and picks the first that doesn't collide. If
+        all positions collide, skips the label and reports it as blocked.
         """
         added = []
         not_found = []
+        blocked = []
 
         # Build a text index: map text content -> entity
         text_map: Dict[str, Any] = {}
+        all_texts: List[Any] = []  # for collision detection
         for ent in msp:
             if ent.dxftype() == "TEXT":
                 txt = (ent.dxf.text or "").strip().upper()
                 if txt:
                     text_map.setdefault(txt, []).append(ent)
+                all_texts.append(ent)
+            elif ent.dxftype() == "MTEXT":
+                all_texts.append(ent)
 
         for label, target in zip(labels, targets):
             target_upper = target.strip().upper()
@@ -362,36 +430,71 @@ class AddTextLabelEngine:
             t_style = getattr(target_ent.dxf, "style", "Standard")
             t_rotation = getattr(target_ent.dxf, "rotation", 0.0)
 
-            # Position: same Y, offset to the left by ~1.5x text height
-            x_offset = parameters.get("x_offset", t_height * 1.5)
-            tx = target_ent.dxf.insert.x - x_offset
-            ty = target_ent.dxf.insert.y
+            # Estimate label width (rough: chars * height * 0.6 for monospace-ish)
+            label_width = len(label) * t_height * 0.6
+            label_height = t_height
 
-            # Check if label already exists at this position (avoid duplicates)
+            # Candidate positions: try left, right, above, below the target
+            x_offset = parameters.get("x_offset", t_height * 1.5)
+            target_x = target_ent.dxf.insert.x
+            target_y = target_ent.dxf.insert.y
+
+            candidate_positions = [
+                ("left", target_x - x_offset - label_width, target_y),
+                ("right", target_x + x_offset + label_width, target_y),
+                ("above", target_x, target_y + label_height * 1.5),
+                ("below", target_x, target_y - label_height * 1.5),
+                ("far_left", target_x - x_offset * 3 - label_width, target_y),
+                ("far_right", target_x + x_offset * 3 + label_width, target_y),
+            ]
+
+            # Check if label already exists at any candidate position (avoid duplicates)
             already_exists = False
-            for ent in msp:
+            for ent in all_texts:
                 if ent.dxftype() == "TEXT":
                     et = (ent.dxf.text or "").strip().upper()
                     if et == label.upper():
                         ex, ey = ent.dxf.insert.x, ent.dxf.insert.y
-                        if abs(ex - tx) < 2.0 and abs(ey - ty) < 2.0:
-                            already_exists = True
-                            break
+                        for _, cx, cy in candidate_positions:
+                            if abs(ex - cx) < 2.0 and abs(ey - cy) < 2.0:
+                                already_exists = True
+                                break
+                if already_exists:
+                    break
 
             if already_exists:
                 added.append({"label": label, "target": target,
-                              "position": (tx, ty), "duplicate": True})
+                              "position": candidate_positions[0][1:3],
+                              "duplicate": True})
+                continue
+
+            # Collision detection: find a position that doesn't overlap existing text
+            chosen_pos = None
+            chosen_side = None
+            for side, cx, cy in candidate_positions:
+                if _check_text_collision(all_texts, cx, cy, label_width, label_height,
+                                         exclude_text=label):
+                    continue
+                chosen_pos = (cx, cy)
+                chosen_side = side
+                break
+
+            if chosen_pos is None:
+                # All positions collide — skip and report
+                blocked.append({"label": label, "target": target,
+                                "reason": "all candidate positions collide with existing text"})
                 continue
 
             msp.add_text(label, dxfattribs={
-                "insert": (tx, ty),
+                "insert": chosen_pos,
                 "height": t_height,
                 "layer": t_layer,
                 "style": t_style,
                 "rotation": t_rotation,
             })
             added.append({"label": label, "target": target,
-                          "position": (tx, ty), "duplicate": False})
+                          "position": chosen_pos, "side": chosen_side,
+                          "duplicate": False})
 
         doc.saveas(out_dxf)
         return {
@@ -399,7 +502,9 @@ class AddTextLabelEngine:
             "mode": "batch",
             "labels_added": len([a for a in added if not a.get("duplicate")]),
             "labels_duplicate": len([a for a in added if a.get("duplicate")]),
+            "labels_blocked": len(blocked),
             "targets_not_found": not_found,
+            "blocked": blocked,
             "details": added,
             "output_dxf": out_dxf,
         }
