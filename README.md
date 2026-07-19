@@ -26,7 +26,7 @@ The pipeline in `cli_anything/qcad/pipelines/markup_pipeline.py` is now task-typ
 |---|---|---|
 | `delete_clouded_entities` | `engines/delete_clouded_entities.py` | Delete geometry and text inside PDF cloud polygons while preserving terminals, ground, title block, and drawing borders. |
 | `change_text_value` | `engines/text_value.py` | Replace TEXT/MTEXT/ATTRIB values (e.g. `TB-20` → `TB-21`). |
-| `add_text_label` | `engines/text_value.py` | Insert a new TEXT/MTEXT label near a region or anchor. |
+| `add_text_label` | `engines/text_value.py` | Insert a new TEXT/MTEXT label near a region or anchor. Supports **batch mode** (add multiple labels beside existing text, e.g. Y521-Y536 beside 5-5-01 to 5-5-16) with **collision detection** that tries 6 candidate positions and skips labels that would overlap existing text. Also handles **revision row filling** by auto-discovering the title block's REV_N ATTRIB slots. |
 | `clone_terminal_wires` | `engines/clone_terminal_wires.py` | Clone wire geometry and labels between row bands without duplicating terminal INSERT blocks or creating duplicate arcs. |
 | `resize_bounding_box` | `engines/extra_ops.py` | Shrink a closed LWPOLYLINE box around a component label. |
 | `mark_spare_wires` | `engines/extra_ops.py` | Draw dashed `HIDDEN` rectangles around clouded spare regions. |
@@ -80,6 +80,28 @@ cli-anything-qcad apply drawing.dwg markup.pdf -o drawing_modified.dwg --per-tas
 ```
 
 ## Recent Changes (July 2026)
+
+### Collision Detection for Batch Labels (`1cc102d`)
+
+The `add_text_label` engine's batch mode previously placed labels at `target.x - 1.5 * text_height` without accounting for the label's own width, causing new labels to overlap the very text they were placed beside. This was caught on a real drawing where Y521-Y536 labels collided with existing 5-5-XX wire labels.
+
+**Fix:**
+- Added `_text_bbox()` and `_check_text_collision()` helpers that compute TEXT/MTEXT bounding boxes and test rectangle intersection with a margin.
+- `_add_batch_labels()` now tries 6 candidate positions (left, right, above, below, far_left, far_right) and picks the first that doesn't collide with any existing text entity.
+- Labels that can't be placed without collision are reported as `blocked` in the pipeline report instead of silently overlapped.
+
+### Closed-Loop VLM Verification (`vlm_verify_loop.py`)
+
+A new verification module (`utils/vlm_verify_loop.py`) wraps the pipeline in a retry loop:
+
+1. After each pipeline run, generate **zoomed crops** (4x upscale) of each task's target region — never full-screen screenshots (VLMs hallucinate on full pages).
+2. Query the VLM (`gemma4:31b-cloud`) with **neutral questions** ("list all text you see" not "is X deleted?").
+3. Parse pass/fail for each modification request.
+4. If any check fails, diagnose the root cause via DXF entity inspection and apply targeted fixes.
+5. Re-run the pipeline with fixes applied. Repeat until all checks pass or max iterations (5) reached.
+6. Falls back to **DXF-level verification** if VLM is unreachable or QCAD screenshots fail.
+
+Also adds `overlap_check` task type to `_dxf_verify()` — scans all TEXT/MTEXT entities for bounding-box intersections to detect overlapping labels structurally.
 
 ### Drawing Profile Auto-Discovery (`c08411c`)
 

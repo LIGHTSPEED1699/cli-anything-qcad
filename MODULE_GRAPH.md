@@ -33,6 +33,7 @@ flowchart LR
         terminal_positions[terminal_positions]
         visual_verifier[visual_verifier]
         visual_verify[visual_verify]
+        vlm_verify_loop[vlm_verify_loop]
     end
 
     subgraph pipelines[Pipelines]
@@ -79,6 +80,9 @@ flowchart LR
     text_value --> drawing_profile
     text_value --> dxf_entity_index
     visual_verify --> dwg_converter
+    vlm_verify_loop --> drawing_profile
+    vlm_verify_loop --> markup_pipeline
+    vlm_verify_loop --> visual_verifier
 
     classDef backends fill:#e1f5fe,stroke:#0288d1
     classDef core fill:#f3e5f5,stroke:#7b1fa2
@@ -107,6 +111,7 @@ flowchart LR
     class terminal_positions utils
     class visual_verifier utils
     class visual_verify utils
+    class vlm_verify_loop utils
     class markup_pipeline pipelines
     class qcad_cli other
 ```
