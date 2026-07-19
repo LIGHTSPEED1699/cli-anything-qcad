@@ -256,6 +256,17 @@ class AddTextLabelEngine:
         doc = ezdxf.readfile(dxf_path)
         msp = doc.modelspace()
 
+        # ── Batch label mode ─────────────────────────────────
+        # "add labels Y521 besides 5-5-01, Y522 to 5-5-02, ..., Y536 besides 5-5-16"
+        # Parameters: batch_labels=["Y521",...,"Y536"], batch_targets=["5-5-01",...,"5-5-16"]
+        # For each target, find the existing TEXT entity by its text, then place
+        # the corresponding label beside it (slight X offset, same Y, same style).
+        batch_labels = parameters.get("batch_labels")
+        batch_targets = parameters.get("batch_targets")
+        if batch_labels and batch_targets and len(batch_labels) == len(batch_targets):
+            return self._add_batch_labels(doc, msp, batch_labels, batch_targets,
+                                          parameters, out_dxf, dxf_path)
+
         # ── Revision row filling mode ──────────────────────────
         # If the annotation text mentions "revision note" or "revision row",
         # fill in the next empty revision table ATTRIB slot.
@@ -301,6 +312,95 @@ class AddTextLabelEngine:
             "text": text,
             "insert": point,
             "snapped_to_wire": snap_pt is not None,
+            "output_dxf": out_dxf,
+        }
+
+    def _add_batch_labels(self, doc, msp, labels: List[str], targets: List[str],
+                          parameters: Dict[str, Any], out_dxf: str,
+                          dxf_path: str = None) -> Dict[str, Any]:
+        """Add multiple labels beside existing target text entities.
+
+        For each target text (e.g. "5-5-01"), find its TEXT entity in the
+        DXF, then place the corresponding label (e.g. "Y521") beside it
+        with a small X offset, matching the target's text style (height,
+        layer, style, rotation).
+
+        The X offset defaults to the target text height (placing the label
+        just to the left of the wire number), but can be overridden via
+        parameters["x_offset"].
+        """
+        added = []
+        not_found = []
+
+        # Build a text index: map text content -> entity
+        text_map: Dict[str, Any] = {}
+        for ent in msp:
+            if ent.dxftype() == "TEXT":
+                txt = (ent.dxf.text or "").strip().upper()
+                if txt:
+                    text_map.setdefault(txt, []).append(ent)
+
+        for label, target in zip(labels, targets):
+            target_upper = target.strip().upper()
+            candidates = text_map.get(target_upper, [])
+            if not candidates:
+                # Try partial match (target might be a substring)
+                for txt, ents in text_map.items():
+                    if target_upper in txt or txt in target_upper:
+                        candidates = ents
+                        break
+            if not candidates:
+                not_found.append(target)
+                continue
+
+            # Use the first candidate (or the one closest to the annotation point)
+            target_ent = candidates[0]
+
+            # Get target text style
+            t_height = getattr(target_ent.dxf, "height", 2.5)
+            t_layer = target_ent.dxf.layer
+            t_style = getattr(target_ent.dxf, "style", "Standard")
+            t_rotation = getattr(target_ent.dxf, "rotation", 0.0)
+
+            # Position: same Y, offset to the left by ~1.5x text height
+            x_offset = parameters.get("x_offset", t_height * 1.5)
+            tx = target_ent.dxf.insert.x - x_offset
+            ty = target_ent.dxf.insert.y
+
+            # Check if label already exists at this position (avoid duplicates)
+            already_exists = False
+            for ent in msp:
+                if ent.dxftype() == "TEXT":
+                    et = (ent.dxf.text or "").strip().upper()
+                    if et == label.upper():
+                        ex, ey = ent.dxf.insert.x, ent.dxf.insert.y
+                        if abs(ex - tx) < 2.0 and abs(ey - ty) < 2.0:
+                            already_exists = True
+                            break
+
+            if already_exists:
+                added.append({"label": label, "target": target,
+                              "position": (tx, ty), "duplicate": True})
+                continue
+
+            msp.add_text(label, dxfattribs={
+                "insert": (tx, ty),
+                "height": t_height,
+                "layer": t_layer,
+                "style": t_style,
+                "rotation": t_rotation,
+            })
+            added.append({"label": label, "target": target,
+                          "position": (tx, ty), "duplicate": False})
+
+        doc.saveas(out_dxf)
+        return {
+            "engine": "add_text_label",
+            "mode": "batch",
+            "labels_added": len([a for a in added if not a.get("duplicate")]),
+            "labels_duplicate": len([a for a in added if a.get("duplicate")]),
+            "targets_not_found": not_found,
+            "details": added,
             "output_dxf": out_dxf,
         }
 

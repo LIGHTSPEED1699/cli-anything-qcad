@@ -347,6 +347,118 @@ def _map_pdf_region_to_dxf(region: Dict[str, Any], affine: Optional[Any]) -> Dic
     return region
 
 
+def _extract_batch_labels(text: str) -> Optional[Dict[str, Any]]:
+    """Parse 'add labels Y521 besides 5-5-01, Y522 to 5-5-02, ..., Y536 besides 5-5-16' patterns.
+
+    Returns a dict with:
+      labels:   ["Y521", "Y522", ..., "Y536"]
+      targets:  ["5-5-01", "5-5-02", ..., "5-5-16"]
+    or None if the pattern doesn't match.
+    """
+    # Pattern: add labels {PREFIX}{START} [besides|to|near] {TARGET_PREFIX}{TARGET_START},
+    #          {PREFIX}{START+1} [besides|to] {TARGET_PREFIX}{TARGET_START+1},
+    #          ..., {PREFIX}{END} [besides|to] {TARGET_PREFIX}{TARGET_END}
+    #
+    # Also handles: "add labels Y521-Y536 besides 5-5-01 to 5-5-16"
+    # and: "add label Y521 next to 5-5-01, Y522 next to 5-5-02, ..., Y536 next to 5-5-16"
+    lowered = text.lower().strip()
+
+    # Must start with "add label" (singular or plural)
+    if not lowered.startswith("add label"):
+        return None
+    if "beside" not in lowered and "next to" not in lowered and "near" not in lowered:
+        return None
+
+    # Extract all label-target pairs from the text
+    # A label is like Y521, a target is like 5-5-01
+    label_pattern = r"([A-Z]\d{2,4})"  # e.g. Y521, Y1023
+    target_pattern = r"(\d+-\d+-\d{2}|\d+-\d+|[A-Z]+-\d+)"  # e.g. 5-5-01, 5-5, TB-21
+
+    # Find all labels and targets in the text body (after "add labels")
+    body = text
+    # Remove "add labels" or "add label" prefix
+    body = re.sub(r"^add\s+labels?\s+", "", body, flags=re.IGNORECASE)
+
+    # Handle range form: "Y521-Y536 besides 5-5-01 to 5-5-16"
+    # or "Y521–Y536 besides 5-5-01 to 5-5-16" (en-dash)
+    range_m = re.search(
+        r"([A-Z])(\d{2,4})\s*[-–]\s*\1(\d{2,4})\s+(?:besides?|to|near|next\s+to)\s+"
+        r"(\d+-\d+-\d{2}|\d+-\d+)\s+to\s+(\d+-\d+-\d{2}|\d+-\d+)",
+        body, re.IGNORECASE)
+    if range_m:
+        prefix = range_m.group(1).upper()
+        start_num = int(range_m.group(2))
+        end_num = int(range_m.group(3))
+        target_start = range_m.group(4)
+        target_end = range_m.group(5)
+
+        labels = [f"{prefix}{n}" for n in range(start_num, end_num + 1)]
+
+        # Parse target range: e.g. "5-5-01" to "5-5-16"
+        # Extract the numeric suffix and increment
+        target_parts = target_start.rsplit("-", 1)
+        if len(target_parts) == 2:
+            target_prefix_str = target_parts[0] + "-"
+            target_start_num = int(target_parts[1])
+            target_end_num_str = target_end.rsplit("-", 1)[1]
+            target_end_num = int(target_end_num_str)
+            # Determine zero-padding width
+            pad_width = len(target_parts[1])
+            targets = [f"{target_prefix_str}{n:0{pad_width}d}"
+                       for n in range(target_start_num, target_end_num + 1)]
+        else:
+            return None
+
+        if len(labels) != len(targets):
+            return None
+        return {"labels": labels, "targets": targets}
+
+    # Handle explicit pair form: "Y521 besides 5-5-01, Y522 to 5-5-02, ..., Y536 besides 5-5-16"
+    # Find all label-target pairs
+    pairs = re.findall(
+        r"([A-Z]\d{2,4})\s+(?:besides?|to|near|next\s+to)\s+(\d+-\d+-\d{2}|\d+-\d+|[A-Z]+-\d+)",
+        body, re.IGNORECASE)
+
+    if not pairs:
+        return None
+
+    labels = [p[0].upper() for p in pairs]
+    targets = [p[1].upper() for p in pairs]
+
+    # Handle "..." / "..." by expanding the series if first and last pairs
+    # define the range.  The middle pairs are just illustrative examples.
+    if "..." in body and len(pairs) >= 2:
+        # Expand: first pair gives start, last pair gives end
+        first_label = pairs[0][0].upper()
+        last_label = pairs[-1][0].upper()
+        first_target = pairs[0][1].upper()
+        last_target = pairs[-1][1].upper()
+
+        # Extract prefix and number from labels
+        label_prefix = re.match(r"([A-Z]+)(\d+)", first_label)
+        if label_prefix:
+            lp = label_prefix.group(1)
+            ln1 = int(label_prefix.group(2))
+            ln2 = int(re.match(r"[A-Z]+(\d+)", last_label).group(1))
+            labels = [f"{lp}{n}" for n in range(ln1, ln2 + 1)]
+
+        # Extract target series
+        target_parts = first_target.rsplit("-", 1)
+        if len(target_parts) == 2:
+            tp = target_parts[0] + "-"
+            tn1 = int(target_parts[1])
+            tn2 = int(last_target.rsplit("-", 1)[1])
+            pad = len(target_parts[1])
+            targets = [f"{tp}{n:0{pad}d}" for n in range(tn1, tn2 + 1)]
+
+    if len(labels) != len(targets):
+        return None
+    if len(labels) < 2:
+        return None
+
+    return {"labels": labels, "targets": targets}
+
+
 def _extract_change_value(text: str) -> Tuple[Optional[str], Optional[str]]:
     """Extract (target, new_value) from common text patterns."""
     lowered = text.lower()
@@ -428,10 +540,20 @@ def _infer_task_from_annotation(annot: Dict[str, Any], affine: Optional[Any],
                 parameters = {"text": new_value}
         constraints = ["match text style of nearby labels"]
     elif cat_name == "add":
-        task_type = TaskType.ADD_TEXT_LABEL.value
-        if new_value:
-            parameters = {"text": new_value}
-        constraints = ["match text style of nearby labels"]
+        # Check for batch label pattern: "add labels Y521 besides 5-5-01, ..."
+        batch = _extract_batch_labels(text)
+        if batch:
+            task_type = TaskType.ADD_TEXT_LABEL.value
+            parameters = {
+                "batch_labels": batch["labels"],
+                "batch_targets": batch["targets"],
+            }
+            constraints = ["match text style of nearby labels"]
+        else:
+            task_type = TaskType.ADD_TEXT_LABEL.value
+            if new_value:
+                parameters = {"text": new_value}
+            constraints = ["match text style of nearby labels"]
     elif cat_name in ("clone", "reorder"):
         # If we have a cloud polygon, use cloud-based clone (more accurate).
         # Otherwise fall back to text-based row clone.
