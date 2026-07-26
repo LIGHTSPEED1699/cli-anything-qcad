@@ -108,6 +108,23 @@ def _text_geometry_points(ent) -> List[Tuple[float, float]]:
     return points
 
 
+def _polyline_points(ent) -> List[Tuple[float, float]]:
+    """Extract (x, y) points from a 3D POLYLINE entity (ezdxf POLYLINE).
+
+    3D POLYLINEs store vertices as VERTEX sub-entities accessible via
+    ``ent.vertices``.  Each vertex has ``.dxf.location`` (Vec3).
+    This is distinct from LWPOLYLINE which uses ``ent.get_points("xy")``.
+    """
+    pts = []
+    try:
+        for v in ent.vertices:
+            loc = v.dxf.location
+            pts.append((loc.x, loc.y))
+    except Exception:
+        pass
+    return pts
+
+
 def _entity_geometry_points(ent) -> List[Tuple[float, float]]:
     """Sample points on an entity for inside-polygon testing."""
     etype = ent.dxftype()
@@ -115,6 +132,19 @@ def _entity_geometry_points(ent) -> List[Tuple[float, float]]:
         s = ent.dxf.start
         e = ent.dxf.end
         return [(s.x, s.y), (e.x, e.y), ((s.x + e.x) / 2, (s.y + e.y) / 2)]
+    if etype == "POLYLINE":
+        # 3D POLYLINE — vertices are VERTEX sub-entities with .dxf.location
+        pts = _polyline_points(ent)
+        if not pts:
+            return []
+        extras = []
+        for i in range(len(pts) - 1):
+            p1, p2 = pts[i], pts[i + 1]
+            extras.append(((p1[0] + p2[0]) / 2, (p1[1] + p2[1]) / 2))
+        if pts:
+            extras.append((sum(p[0] for p in pts) / len(pts),
+                           sum(p[1] for p in pts) / len(pts)))
+        return pts + extras
     if etype == "LWPOLYLINE":
         pts = [(p[0], p[1]) for p in ent.get_points("xy")]
         if ent.closed:
@@ -291,6 +321,31 @@ def _entity_inside_polygon(ent, polygon: List[Tuple[float, float]],
         s = ent.dxf.start
         e = ent.dxf.end
         return _segment_intersects_polygon((s.x, s.y), (e.x, e.y), polygon)
+
+    if etype == "POLYLINE":
+        # 3D POLYLINE — same logic as LWPOLYLINE but vertices via .vertices
+        pts = _polyline_points(ent)
+        if not pts:
+            return False
+        # Determine if closed: check if first == last vertex
+        is_closed = len(pts) >= 2 and pts[0] == pts[-1]
+        raw_pts = pts[:-1] if is_closed else pts
+        if not raw_pts:
+            raw_pts = pts
+        cx = sum(p[0] for p in raw_pts) / len(raw_pts)
+        cy = sum(p[1] for p in raw_pts) / len(raw_pts)
+        centroid_inside = _point_in_polygon((cx, cy), polygon)
+
+        if is_closed:
+            if centroid_inside:
+                return True
+            return False
+
+        # Open polyline (wire): use segment intersection
+        for i in range(len(pts) - 1):
+            if _segment_intersects_polygon(pts[i], pts[i + 1], polygon):
+                return True
+        return centroid_inside
 
     if etype == "LWPOLYLINE":
         pts = [(p[0], p[1]) for p in ent.get_points("xy")]

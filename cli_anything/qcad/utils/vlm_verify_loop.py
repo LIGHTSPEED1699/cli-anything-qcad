@@ -89,11 +89,18 @@ class LoopResult:
 
 # ── Check generation ─────────────────────────────────────────
 
-def build_checks_from_tasks(tasks: List[Any], dxf_path: str) -> List[VerificationCheck]:
+def build_checks_from_tasks(tasks: List[Any], dxf_path: str,
+                            feedback: str = "") -> List[VerificationCheck]:
     """Generate VLM verification checks from the pipeline task list.
 
     Each task gets one check with a neutral question and crop centered on the
     task's DXF region.
+
+    When feedback is provided (from a user redo comment), an extra check is
+    added that specifically targets the user's reported issue.  For example,
+    if the user says "top-left deletion cloud still has lines", a targeted
+    VLM check asks "are there any visible lines, dots, or small objects
+    remaining in this area?" with the user's feedback as context.
     """
     checks: List[VerificationCheck] = []
 
@@ -214,6 +221,58 @@ def build_checks_from_tasks(tasks: List[Any], dxf_path: str) -> List[Verificatio
                 crop_center=center,
                 crop_size=6.0,
             ))
+
+    # ── Feedback-driven checks ──────────────────────────────
+    # When the user provided a redo comment, add targeted VLM checks that
+    # specifically look for the issue the user reported.  This ensures the
+    # VLM verification doesn't just re-ask the same generic questions but
+    # actually focuses on what the user complained about.
+    if feedback:
+        feedback_lower = feedback.lower()
+        # Check for deletion-related feedback: user reports leftover objects
+        # in clouded regions.  Add a targeted check for each delete task.
+        if any(kw in feedback_lower for kw in
+               ("deletion", "delete", "cloud", "lines", "objects",
+                "not completed", "still", "remaining", "leftover",
+                "missed", "not deleted")):
+            for task in tasks:
+                if isinstance(task, dict):
+                    ttype = task.get("task_type", "")
+                    tid = task.get("task_id", "")
+                    task_dxf_region = task.get("dxf_region")
+                else:
+                    ttype = task.task_type
+                    tid = task.task_id
+                    task_dxf_region = getattr(task, "dxf_region", None)
+
+                if ttype != "delete_clouded_entities":
+                    continue
+
+                region = task_dxf_region
+                if not region or not region.get("bbox"):
+                    continue
+
+                bx0, bx1, by0, by1 = region["bbox"]
+                center = ((bx0 + bx1) / 2, (by0 + by1) / 2)
+
+                checks.append(VerificationCheck(
+                    task_id=f"{tid}_feedback",
+                    task_type="delete_clouded_entities",
+                    question=(
+                        "This is a zoomed crop of an engineering drawing "
+                        "in a region where ALL objects should have been "
+                        "deleted (clouded for deletion). Look carefully: "
+                        "are there ANY visible lines, dots, text, symbols, "
+                        "or other CAD objects remaining in this area? "
+                        "If you see ANY entity (even a single small line or "
+                        "dot), answer NO and describe what you see. "
+                        "If the area is completely empty (no entities), "
+                        "answer YES.\n\n"
+                        f"User feedback: {feedback}"
+                    ),
+                    crop_center=center,
+                    crop_size=6.0,
+                ))
 
     return checks
 
@@ -419,6 +478,61 @@ def _dxf_verify(check: VerificationCheck, dxf_path: str) -> bool:
                             cx, cy = check.crop_center
                             if abs(ip.x - cx) < check.crop_size and abs(ip.y - cy) < check.crop_size:
                                 return False  # Still present in the region
+
+            # Also check for non-text entities (POLYLINE, LWPOLYLINE, LINE,
+            # CIRCLE, ARC, ELLIPSE, HATCH) inside the deletion region.
+            # This catches the class of bug where the delete engine missed
+            # certain entity types (e.g. 3D POLYLINE not handled).
+            # Use the task's actual cloud polygon when available (from
+            # dxf_expect_absent or the check's crop data) to avoid false
+            # positives from entities that are nearby but legitimately
+            # outside the cloud.
+            from cli_anything.qcad.engines.delete_clouded_entities import (
+                _entity_inside_polygon, _polyline_points,
+            )
+
+            # Try to get the polygon from the check's stored region verts.
+            # The VerificationCheck doesn't carry the polygon directly, but
+            # we can reconstruct a tight bbox from crop_center + a small
+            # radius.  Use 1.5 units as a tight radius that stays within
+            # the cloud boundary (clouds are typically 2-5 units wide).
+            cx, cy = check.crop_center
+            cs = 1.5  # tight radius to avoid catching neighboring entities
+
+            for ent in msp:
+                etype = ent.dxftype()
+                if etype in ("TEXT", "MTEXT", "INSERT"):
+                    continue  # checked above or protected
+                try:
+                    if etype == "LINE":
+                        s, e2 = ent.dxf.start, ent.dxf.end
+                        if (abs(s.x - cx) < cs and abs(s.y - cy) < cs) or \
+                           (abs(e2.x - cx) < cs and abs(e2.y - cy) < cs):
+                            return False
+                    elif etype == "CIRCLE":
+                        c = ent.dxf.center
+                        if abs(c.x - cx) < cs and abs(c.y - cy) < cs:
+                            return False
+                    elif etype == "POLYLINE":
+                        for v in ent.vertices:
+                            loc = v.dxf.location
+                            if abs(loc.x - cx) < cs and abs(loc.y - cy) < cs:
+                                return False
+                    elif etype == "LWPOLYLINE":
+                        for p in ent.get_points("xy"):
+                            if abs(p[0] - cx) < cs and abs(p[1] - cy) < cs:
+                                return False
+                    elif etype == "ARC":
+                        c = ent.dxf.center
+                        if abs(c.x - cx) < cs and abs(c.y - cy) < cs:
+                            return False
+                    elif etype == "ELLIPSE":
+                        c = ent.dxf.center
+                        if abs(c.x - cx) < cs and abs(c.y - cy) < cs:
+                            return False
+                except Exception:
+                    pass
+
             return True
 
         elif check.task_type == "change_text_value":
@@ -569,6 +683,7 @@ def run_vlm_verify_loop(
     max_iterations: int = 5,
     skip_vlm: bool = False,
     code_root: str = "",
+    feedback: str = "",
 ) -> LoopResult:
     """Run the full pipeline + VLM verification loop.
 
@@ -587,6 +702,8 @@ def run_vlm_verify_loop(
         max_iterations: Maximum pipeline re-run attempts.
         skip_vlm: If True, skip VLM and use DXF-only verification.
         code_root: Root directory of the cli_anything package (for applying fixes).
+        feedback: User feedback comment from redo, injected as task constraints
+                  and used to generate targeted VLM verification checks.
 
     Returns:
         LoopResult with pass/fail status, check results, and fixes applied.
@@ -623,6 +740,7 @@ def run_vlm_verify_loop(
             output_dwg=iter_output,
             artifacts_dir=str(iter_artifacts),
             skip_vlm=True,  # We do our own VLM verification
+            feedback=feedback,
         )
 
         if not result.get("success"):
@@ -642,7 +760,8 @@ def run_vlm_verify_loop(
 
         # DXF-level verification (always runs, even with VLM)
         print("\n--- DXF-level verification ---", flush=True)
-        checks = build_checks_from_tasks(tasks, final_dxf)
+        checks = build_checks_from_tasks(tasks, final_dxf,
+                                          feedback=feedback)
         dxf_results = []
         for check in checks:
             dxf_result = CheckResult(

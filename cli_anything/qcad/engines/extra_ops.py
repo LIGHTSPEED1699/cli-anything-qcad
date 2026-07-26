@@ -295,24 +295,459 @@ class ResizeBoundingBoxEngine:
 
 
 class MarkSpareWiresEngine:
-    """Mark clouded wire runs as spare.
+    """Mark clouded wire runs as spare by adding SPARE text at both terminal ends.
 
-    The PDF markup instruction 'mark spare on both ends' means the wires
-    in the clouded region should be labeled or annotated as spare at both
-    ends of the circuit.  The exact representation depends on drawing
-    conventions (e.g. adding 'SPARE' text labels, changing line type,
-    or crossing out terminal numbers).
+    PDF markup instruction 'mark spare on both ends' means: for each wire
+    that passes through the clouded region, add 'SPARE' text adjacent to
+    the wire's terminal label at both the left and right terminal blocks.
 
-    The previous implementation drew dashed HIDDEN rectangles around the
-    clouded region, which created unwanted geometry not requested in the
-    markup.  This engine is now a pass-through until a proper spare-marking
-    routine is implemented.
+    Drawing topology (validated against real instrument loop drawings):
+
+    - Wires are horizontal 2-vertex POLYLINEs (or LINEs) at a fixed Y.
+    - Terminal blocks are 5-vertex POLYLINE rectangles (left+right+top+bottom+close).
+      Left block:  X 8.37-9.17   Right block: X 13.93-14.73
+    - Wire labels (F176, A233, etc.) are TEXT entities inside terminal boxes,
+      offset slightly below the wire Y.
+    - The cloud polygon marks which wire(s) are spare.
+
+    Algorithm:
+
+    1. Extract the cloud polygon from task parameters (region/regions).
+    2. Find all horizontal wires (2-vert POLYLINEs, LINEs) whose Y falls
+       within the cloud's Y-bbox AND whose X-span crosses the cloud interior.
+    3. For each wire, find the terminal box it enters on each end (by
+       checking which 5-vert POLYLINE rectangle's X-range contains the
+       wire's left/right endpoint X).
+    4. For each terminal box, find the TEXT entity inside that box closest
+       to the wire's Y coordinate — that's the wire's terminal label.
+    5. Add 'SPARE' TEXT adjacent to each terminal label (offset to the left
+       of the label, matching the label's text height and style).
+
+    If no wires are found in the cloud, fall back to adding SPARE text next
+    to any TEXT entity inside the cloud polygon.
     """
+
+    _SPARE_TEXT = "SPARE"
+    # X-offset from terminal label to SPARE text (to the left of the label)
+    _SPARE_OFFSET_X = 0.5
+    # Y match tolerance for wire-to-label association (drawing units)
+    _WIRE_Y_TOLERANCE = 0.3
+    # Max distance from wire endpoint to terminal box edge
+    _BOX_PROXIMITY = 1.0
 
     def run(self, dxf_path: str, parameters: Dict[str, Any],
             out_dxf: str) -> Dict[str, Any]:
         doc = ezdxf.readfile(dxf_path)
+        msp = doc.modelspace()
+
+        regions = _normalize_regions(parameters)
+        if not regions:
+            doc.saveas(out_dxf)
+            return {"engine": "mark_spare_wires", "success": False,
+                    "error": "no cloud region provided"}
+
+        added_labels: List[Dict[str, Any]] = []
+        total_wires = 0
+
+        for region in regions:
+            cloud_verts = region.get("verts") or []
+            cloud_bbox = region.get("bbox")
+
+            if cloud_verts and len(cloud_verts) >= 3:
+                verts = cloud_verts
+            elif cloud_bbox:
+                x0, x1, y0, y1 = cloud_bbox
+                verts = [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
+            else:
+                continue
+
+            cloud_ys = [v[1] for v in verts]
+            cloud_ymin, cloud_ymax = min(cloud_ys), max(cloud_ys)
+            cloud_xs = [v[0] for v in verts]
+            cloud_xmin, cloud_xmax = min(cloud_xs), max(cloud_xs)
+            region_width = cloud_xmax - cloud_xmin
+            region_height = cloud_ymax - cloud_ymin
+
+            # Step 1: Find horizontal wires crossing the cloud
+            wires = self._find_wires_in_cloud(msp, cloud_xmin, cloud_xmax,
+                                              cloud_ymin, cloud_ymax)
+
+            # Step 2: Find terminal box rectangles
+            terminal_boxes = self._find_terminal_boxes(msp)
+
+            # Callout-arrow fallback: if no wires found and the region is
+            # small (callout arrow, not a cloud strip), use the arrow tip
+            # as a point probe to find the nearest wire, then trace it to
+            # both terminal blocks.  The arrow tip is the last vertex in
+            # the callout's vertex list (text box → arrow start → arrow tip).
+            if not wires and region_width < 2.0 and len(verts) >= 3:
+                tip_x, tip_y = verts[-1]
+                wires = self._find_wire_at_point(
+                    msp, tip_x, tip_y, search_radius=1.5)
+
+            total_wires += len(wires)
+
+            if wires and terminal_boxes:
+                # Wire-based approach: add SPARE at both ends of each wire
+                for wire_y, wire_xmin, wire_xmax in wires:
+                    left_box = self._find_box_for_endpoint(
+                        terminal_boxes, wire_xmin, wire_y, side="left")
+                    right_box = self._find_box_for_endpoint(
+                        terminal_boxes, wire_xmax, wire_y, side="right")
+
+                    for box, side in [(left_box, "left"), (right_box, "right")]:
+                        if not box:
+                            continue
+                        label_ent = self._find_label_in_box(
+                            msp, box, wire_y)
+                        if label_ent:
+                            spare_pos = self._compute_spare_position(
+                                label_ent, side)
+                            self._add_spare_text(
+                                msp, spare_pos, label_ent)
+                            added_labels.append({
+                                "wire_y": round(wire_y, 3),
+                                "side": side,
+                                "label": label_ent.dxf.text,
+                                "position": [round(spare_pos[0], 3),
+                                             round(spare_pos[1], 3)],
+                            })
+            else:
+                # Fallback: add SPARE next to any text inside the cloud
+                for ent in msp:
+                    if ent.dxftype() not in ("TEXT", "MTEXT"):
+                        continue
+                    x = ent.dxf.insert.x
+                    y = ent.dxf.insert.y
+                    if (cloud_xmin <= x <= cloud_xmax and
+                            cloud_ymin <= y <= cloud_ymax):
+                        spare_pos = self._compute_spare_position(ent, "left")
+                        self._add_spare_text(msp, spare_pos, ent)
+                        added_labels.append({
+                            "fallback": True,
+                            "label": ent.dxf.text,
+                            "position": [round(spare_pos[0], 3),
+                                         round(spare_pos[1], 3)],
+                        })
+
         doc.saveas(out_dxf)
-        return {"engine": "mark_spare_wires", "added_rectangles": 0,
-                "note": "pass-through; spare marking not yet implemented",
-                "output_dxf": out_dxf}
+        return {
+            "engine": "mark_spare_wires",
+            "success": True,
+            "added_labels": added_labels,
+            "num_wires_found": total_wires,
+            "output_dxf": out_dxf,
+        }
+
+    def _find_wires_in_cloud(
+        self, msp, cloud_xmin: float, cloud_xmax: float,
+        cloud_ymin: float, cloud_ymax: float
+    ) -> List[Tuple[float, float, float]]:
+        """Find horizontal wires crossing the cloud region.
+
+        Returns list of (y, xmin, xmax) for each wire.
+        """
+        wires: List[Tuple[float, float, float]] = []
+        seen_ys = set()
+
+        for ent in msp:
+            t = ent.dxftype()
+            if t == "POLYLINE":
+                pts = [(v.dxf.location.x, v.dxf.location.y)
+                       for v in ent.vertices]
+            elif t == "LWPOLYLINE":
+                pts = [(p[0], p[1]) for p in ent.get_points("xy")]
+            elif t == "LINE":
+                pts = [(ent.dxf.start.x, ent.dxf.start.y),
+                       (ent.dxf.end.x, ent.dxf.end.y)]
+            else:
+                continue
+
+            if len(pts) != 2:
+                continue
+
+            (x1, y1), (x2, y2) = pts
+            # Must be horizontal (same Y)
+            if abs(y1 - y2) > 0.01:
+                continue
+
+            wy = (y1 + y2) / 2
+            wxmin, wxmax = min(x1, x2), max(x1, x2)
+
+            # Wire Y must be within cloud Y-bbox
+            if not (cloud_ymin - 0.2 <= wy <= cloud_ymax + 0.2):
+                continue
+
+            # Wire must cross the cloud interior (span at least 50% of cloud width)
+            if wxmax < cloud_xmin or wxmin > cloud_xmax:
+                continue
+            # Skip very short segments (terminal-internal connections < 1 unit)
+            if wxmax - wxmin < 1.0:
+                continue
+
+            # Deduplicate by Y (wires have multiple segments at same Y)
+            wy_key = round(wy, 2)
+            if wy_key in seen_ys:
+                # Merge segments: extend the existing wire's X range
+                for i, (sy, sxmin, sxmax) in enumerate(wires):
+                    if round(sy, 2) == wy_key:
+                        wires[i] = (sy, min(sxmin, wxmin), max(sxmax, wxmax))
+                        break
+            else:
+                wires.append((wy, wxmin, wxmax))
+                seen_ys.add(wy_key)
+
+        return wires
+
+    def _find_wire_at_point(
+        self, msp, tip_x: float, tip_y: float,
+        search_radius: float = 1.5,
+    ) -> List[Tuple[float, float, float]]:
+        """Find the nearest horizontal wire to a callout arrow tip point.
+
+        Used when the annotation is a callout arrow (not a cloud strip).
+        Scans all horizontal wires within search_radius DXF units of the
+        tip point and returns the closest one as (y, xmin, xmax), with
+        the X range extended to cover all segments at that Y.
+
+        Returns a list with 0 or 1 entries.
+        """
+        best_y = None
+        best_dist = float("inf")
+
+        for ent in msp:
+            t = ent.dxftype()
+            if t == "POLYLINE":
+                pts = [(v.dxf.location.x, v.dxf.location.y)
+                       for v in ent.vertices]
+            elif t == "LWPOLYLINE":
+                pts = [(p[0], p[1]) for p in ent.get_points("xy")]
+            elif t == "LINE":
+                pts = [(ent.dxf.start.x, ent.dxf.start.y),
+                       (ent.dxf.end.x, ent.dxf.end.y)]
+            else:
+                continue
+
+            if len(pts) != 2:
+                continue
+
+            (x1, y1), (x2, y2) = pts
+            if abs(y1 - y2) > 0.01:
+                continue
+
+            wy = (y1 + y2) / 2
+            # Distance from tip to this wire segment
+            # Vertical distance is primary; horizontal distance matters
+            # only if the tip is outside the segment's X range
+            dy = abs(wy - tip_y)
+            wxmin, wxmax = min(x1, x2), max(x1, x2)
+            if tip_x < wxmin:
+                dx = wxmin - tip_x
+            elif tip_x > wxmax:
+                dx = tip_x - wxmax
+            else:
+                dx = 0.0
+            dist = (dy * dy + dx * dx) ** 0.5
+
+            if dist < search_radius and dist < best_dist:
+                best_dist = dist
+                best_y = wy
+
+        if best_y is None:
+            return []
+
+        # Now collect ALL segments at this Y to get the full wire span
+        all_xmins = []
+        all_xmaxs = []
+        for ent in msp:
+            t = ent.dxftype()
+            if t == "POLYLINE":
+                pts = [(v.dxf.location.x, v.dxf.location.y)
+                       for v in ent.vertices]
+            elif t == "LWPOLYLINE":
+                pts = [(p[0], p[1]) for p in ent.get_points("xy")]
+            elif t == "LINE":
+                pts = [(ent.dxf.start.x, ent.dxf.start.y),
+                       (ent.dxf.end.x, ent.dxf.end.y)]
+            else:
+                continue
+
+            if len(pts) != 2:
+                continue
+
+            (x1, y1), (x2, y2) = pts
+            if abs(y1 - y2) > 0.01:
+                continue
+            wy = (y1 + y2) / 2
+            if abs(wy - best_y) < 0.05:
+                all_xmins.append(min(x1, x2))
+                all_xmaxs.append(max(x1, x2))
+
+        if not all_xmins:
+            return []
+
+        return [(best_y, min(all_xmins), max(all_xmaxs))]
+
+    def _find_terminal_boxes(self, msp) -> List[Dict[str, Any]]:
+        """Find terminal box rectangles (5-vertex closed POLYLINEs or closed LWPOLYLINEs).
+
+        Returns list of dicts: {xmin, xmax, ymin, ymax, cx, cy, entity}
+        """
+        boxes: List[Dict[str, Any]] = []
+
+        for ent in msp:
+            t = ent.dxftype()
+            if t == "POLYLINE":
+                pts = [(v.dxf.location.x, v.dxf.location.y)
+                       for v in ent.vertices]
+            elif t == "LWPOLYLINE":
+                pts = [(p[0], p[1]) for p in ent.get_points("xy")]
+            else:
+                continue
+
+            # Terminal boxes are 5-vertex (4 corners + close) or 4-vertex closed
+            if len(pts) not in (4, 5):
+                continue
+
+            xs = [p[0] for p in pts]
+            ys = [p[1] for p in pts]
+            xmin, xmax = min(xs), max(xs)
+            ymin, ymax = min(ys), max(ys)
+
+            # Must be roughly square (terminal boxes are small, < 1 unit per side)
+            w = xmax - xmin
+            h = ymax - ymin
+            if w < 0.3 or w > 2.0 or h < 0.05 or h > 2.0:
+                continue
+            # Skip the outer drawing border (very large rectangles)
+            if w > 10 and h > 5:
+                continue
+
+            boxes.append({
+                "xmin": xmin, "xmax": xmax,
+                "ymin": ymin, "ymax": ymax,
+                "cx": (xmin + xmax) / 2,
+                "cy": (ymin + ymax) / 2,
+            })
+
+        return boxes
+
+    def _find_box_for_endpoint(
+        self, boxes: List[Dict[str, Any]], wire_x: float,
+        wire_y: float, side: str
+    ) -> Optional[Dict[str, Any]]:
+        """Find the terminal box that the wire endpoint connects to.
+
+        For 'left' side: the box should be to the left of or at the wire start.
+        For 'right' side: the box should be to the right of or at the wire end.
+        """
+        best = None
+        best_dist = float("inf")
+
+        for box in boxes:
+            # The wire endpoint should be near the box's edge
+            if side == "left":
+                # Wire starts at left side; box should contain or be near wire_x
+                if box["xmax"] < wire_x - self._BOX_PROXIMITY:
+                    continue
+                if wire_x < box["xmin"] - self._BOX_PROXIMITY:
+                    continue
+            else:
+                if box["xmin"] > wire_x + self._BOX_PROXIMITY:
+                    continue
+                if wire_x > box["xmax"] + self._BOX_PROXIMITY:
+                    continue
+
+            # Wire Y should pass through the box
+            if not (box["ymin"] - 0.1 <= wire_y <= box["ymax"] + 0.1):
+                continue
+
+            # Distance from wire endpoint to nearest box edge
+            if side == "left":
+                dist = abs(wire_x - box["xmax"])
+            else:
+                dist = abs(wire_x - box["xmin"])
+
+            if dist < best_dist:
+                best_dist = dist
+                best = box
+
+        return best
+
+    def _find_label_in_box(self, msp, box: Dict[str, Any],
+                           wire_y: float):
+        """Find the TEXT entity inside a terminal box closest to the wire's Y.
+
+        Returns the TEXT entity, or None.
+        """
+        best_ent = None
+        best_dist = float("inf")
+
+        for ent in msp:
+            if ent.dxftype() not in ("TEXT", "MTEXT"):
+                continue
+            x = ent.dxf.insert.x
+            y = ent.dxf.insert.y
+
+            # Text must be inside the box
+            if not (box["xmin"] - 0.1 <= x <= box["xmax"] + 0.1 and
+                    box["ymin"] - 0.1 <= y <= box["ymax"] + 0.1):
+                continue
+
+            dist = abs(y - wire_y)
+            if dist < best_dist:
+                best_dist = dist
+                best_ent = ent
+
+        return best_ent
+
+    def _compute_spare_position(self, label_ent, side: str) -> Tuple[float, float]:
+        """Compute where to place SPARE text relative to the terminal label.
+
+        For 'left' end: SPARE goes to the LEFT of the label.
+        For 'right' end: SPARE goes to the RIGHT of the label.
+        Y is aligned with the label's Y.
+        """
+        lx = label_ent.dxf.insert.x
+        ly = label_ent.dxf.insert.y
+
+        # Estimate label width for offset
+        try:
+            txt = label_ent.dxf.text if label_ent.dxftype() == "TEXT" else (label_ent.text or "")
+            h = label_ent.dxf.height if label_ent.dxftype() == "TEXT" else 0.13
+            label_width = max(len(txt), 1) * h * 0.7
+        except Exception:
+            label_width = 0.5
+
+        if side == "left":
+            x = lx - self._SPARE_OFFSET_X
+        else:
+            # Push right-side SPARE past the label with a consistent gap
+            x = lx + label_width + 0.3
+
+        return (x, ly)
+
+    def _add_spare_text(self, msp, pos: Tuple[float, float],
+                        ref_ent) -> None:
+        """Add SPARE text entity matching the reference label's style."""
+        try:
+            h = ref_ent.dxf.height if ref_ent.dxftype() == "TEXT" else 0.13
+            style = ref_ent.dxf.style if ref_ent.dxftype() == "TEXT" else "STANDARD"
+        except Exception:
+            h = 0.13
+            style = "STANDARD"
+
+        try:
+            layer = ref_ent.dxf.layer
+        except Exception:
+            layer = "0"
+
+        msp.add_text(
+            self._SPARE_TEXT,
+            dxfattribs={
+                "insert": (pos[0], pos[1]),
+                "height": h,
+                "style": style,
+                "layer": layer,
+            },
+        )

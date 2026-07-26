@@ -71,6 +71,7 @@ class MarkupPipeline:
         overrides=None,
         artifacts_dir: Optional[str] = None,
         skip_vlm: bool = False,
+        feedback: str = "",
     ) -> Dict[str, Any]:
         output_dir = Path(artifacts_dir) if artifacts_dir else Path(output_dwg).parent if output_dwg else Path.cwd()
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -86,8 +87,9 @@ class MarkupPipeline:
         if not self.converter.dwg_to_dxf(str(dwg_work), str(original_dxf)):
             return {"success": False, "error": "DWG→DXF conversion failed"}
 
-        # Plan tasks
-        tasks = self.planner.plan(str(pdf_work), str(original_dxf))
+        # Plan tasks (pass user feedback from redo comments)
+        tasks = self.planner.plan(str(pdf_work), str(original_dxf),
+                                  feedback=feedback)
         if not tasks:
             return {"success": False, "error": "No tasks generated from PDF annotations"}
 
@@ -112,6 +114,14 @@ class MarkupPipeline:
             "mark_spare_wires": 9,
         }
         tasks.sort(key=lambda t: (order.get(t.task_type, 5), t.task_id))
+
+        # Apply agent-provided parameter overrides to specific tasks.
+        # overrides is a dict: {"t002": {"tolerance": 1.5}, "t006": {"offset": 4.0}}
+        if overrides:
+            for task in tasks:
+                task_overrides = overrides.get(task.task_id)
+                if task_overrides:
+                    task.parameters.update(task_overrides)
 
         # Generate drawing profile for auto-discovery
         from cli_anything.qcad.utils.drawing_profile import DrawingProfile

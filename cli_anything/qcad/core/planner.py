@@ -701,7 +701,17 @@ class MarkupPlanner:
         self.vlm_base_url = vlm_base_url or os.environ.get("OLLAMA_URL", "http://localhost:11434")
         self.vlm_timeout = vlm_timeout
 
-    def plan(self, pdf_path: str, dxf_path: str) -> List[Task]:
+    def plan(self, pdf_path: str, dxf_path: str,
+             feedback: str = "") -> List[Task]:
+        """Plan tasks from PDF annotations.
+
+        When feedback is provided (from a user redo comment), it is injected
+        as an additional constraint on every task.  This lets the user's
+        feedback guide engine behavior on re-runs — e.g. "top-left deletion
+        cloud still has lines" tells the delete engine to be more aggressive
+        in that region, or "labels overlap" tells the text engine to use a
+        larger offset.
+        """
         from cli_anything.qcad.utils.pdf_parser import PdfAnnotationParser
         parser = PdfAnnotationParser()
         annotations = parser.parse(pdf_path)
@@ -724,6 +734,17 @@ class MarkupPlanner:
                                                     vlm_base_url=self.vlm_base_url,
                                                     vlm_timeout=self.vlm_timeout)
             tasks.extend(subtasks)
+
+        # Inject user feedback as additional constraints on every task.
+        # This is the mechanism by which redo comments influence engine
+        # behavior: the engines already read task.constraints, and the
+        # feedback text becomes an extra constraint that can guide deletion
+        # aggressiveness, label placement, clone scope, etc.
+        if feedback:
+            feedback_constraint = f"USER FEEDBACK: {feedback}"
+            for task in tasks:
+                task.constraints.append(feedback_constraint)
+
         # Merge overlapping subtasks before sorting
         tasks = _merge_tasks(tasks)
         # Sort top-to-bottom, left-to-right by PDF bbox y
