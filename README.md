@@ -15,7 +15,7 @@ The pipeline in `cli_anything/qcad/pipelines/markup_pipeline.py` is now task-typ
    - `change_text_value` / `add_text_label` — text/attribute operations
    - `clone_terminal_wires` — copy only wire geometry and labels between row bands; skips terminal INSERTs
    - `resize_bounding_box` — shrink a component box around a label
-   - `mark_spare_wires` — add dashed HIDDEN rectangles around clouded spare areas
+   - `mark_spare_wires` — find horizontal wires crossing the cloud/callout region, trace each wire to both terminal blocks, add SPARE text adjacent to the terminal label at both ends
 6. **Execute** — edit the working DXF, checkpointing after each task.
 7. **Verify** — render original and modified files, run pixel diff + optional VLM semantic check.
 8. **Export** — working DXF → output DWG.
@@ -29,7 +29,7 @@ The pipeline in `cli_anything/qcad/pipelines/markup_pipeline.py` is now task-typ
 | `add_text_label` | `engines/text_value.py` | Insert a new TEXT/MTEXT label near a region or anchor. Supports **batch mode** (add multiple labels beside existing text, e.g. Y521-Y536 beside 5-5-01 to 5-5-16) with **collision detection** that tries 6 candidate positions and skips labels that would overlap existing text. Also handles **revision row filling** by auto-discovering the title block's REV_N ATTRIB slots. |
 | `clone_terminal_wires` | `engines/clone_terminal_wires.py` | Clone wire geometry and labels between row bands without duplicating terminal INSERT blocks or creating duplicate arcs. |
 | `resize_bounding_box` | `engines/extra_ops.py` | Shrink a closed LWPOLYLINE box around a component label. |
-| `mark_spare_wires` | `engines/extra_ops.py` | Draw dashed `HIDDEN` rectangles around clouded spare regions. |
+| `mark_spare_wires` | `engines/extra_ops.py` | Find horizontal wires crossing the clouded (or callout-pointed) region, trace each wire to both terminal blocks, and add SPARE text adjacent to the wire's terminal label at both ends. Handles both cloud polygon annotations (wide region) and callout arrows (narrow region → arrow tip point probe). |
 
 ## Install
 
@@ -80,6 +80,31 @@ cli-anything-qcad apply drawing.dwg markup.pdf -o drawing_modified.dwg --per-tas
 ```
 
 ## Recent Changes (July 2026)
+
+### Agent-Assisted Retry + Parameter Overrides (`a193857`)
+
+The pipeline now supports **agent-assisted parameter tuning** for failed VLM verification and user redo feedback:
+
+- `MarkupPipeline.run(overrides=...)` accepts a dict mapping task_id to parameter deltas (e.g. `{"t002": {"tolerance": 1.5}}`). Overrides are applied to `task.parameters` before execution.
+- The DWG Portal backend (`dwg-portal-backend/server.py`) has two trigger paths:
+  1. **Redo with feedback** — `_redo_pipeline()` calls an LLM agent (glm-5.2:cloud via Ollama) to translate the user's natural-language feedback into per-task parameter overrides, then re-runs the pipeline with those overrides.
+  2. **VLM verification failure** — `_execute_pipeline()` calls the agent with VLM failures + task list, re-runs with overrides, re-verifies. Loops up to `AGENT_MAX_ITERATIONS` (default 3).
+- The agent never touches engine code. It only adjusts existing parameters (tolerance, label_offset, threshold, etc.) via a structured prompt with per-task-type parameter hints.
+- Config via env vars: `DWG_PORTAL_AGENT_MODEL`, `DWG_PORTAL_AGENT_MAX_ITERATIONS`, `DWG_PORTAL_AGENT_TIMEOUT`.
+
+### MarkSpareWiresEngine Implementation (`a193857`)
+
+The `mark_spare_wires` engine was previously a pass-through stub. Now implemented:
+
+1. Extract the cloud polygon from the task's DXF region.
+2. Find horizontal wires (2-vertex POLYLINEs/LINEs) whose Y falls within the cloud's Y-bbox and whose X-span crosses the cloud.
+3. For each wire, find the terminal box (5-vertex POLYLINE rectangle) at each endpoint.
+4. Inside each terminal box, find the TEXT entity closest to the wire's Y.
+5. Add "SPARE" text adjacent to each terminal label, matching its height, style, and layer.
+
+**Callout arrow fallback:** when the region is narrow (< 2.0 DXF units, e.g. a callout arrow without a nearby cloud), the arrow tip (last vertex) is used as a point probe to find the nearest horizontal wire, then traced to both terminal blocks.
+
+Verified against real instrument loop drawings: correctly identifies F176/A233 and F172/B239 terminal label pairs at both wire ends.
 
 ### Collision Detection for Batch Labels (`1cc102d`)
 
@@ -150,4 +175,6 @@ The VLM verification loop's screenshot path had three bugs that caused it to sil
 
 ## Status
 
-Reusable task-type pipeline is implemented and validated on Pairs 1, 2, and 3. The old pair-named executors have been removed; all logic now lives in the engines above.
+Reusable task-type pipeline is implemented and validated on Pairs 1, 2, and 3. All 11 engines are implemented (delete, text change, add label, batch labels, clone terminal wires, cloud clone, text-based clone, resize bounding box, mark spare wires, add dimension, add leader, move entity). The old pair-named executors have been removed; all logic now lives in the engines above.
+
+Agent-assisted retry is implemented in the DWG Portal backend for VLM verification failures and user redo feedback.
