@@ -17,6 +17,7 @@ class AnnotationType(Enum):
     DELETE = "delete"
     ADD = "add"
     REORDER = "reorder"
+    MARK_SPARE = "mark_spare"
     UNKNOWN = "unknown"
 
 
@@ -61,6 +62,10 @@ def infer_action_type(text: str) -> Tuple[str, float]:
     add_keywords = ['add', 'insert', 'create', 'draw']
     if any(kw in text_lower for kw in add_keywords):
         return (AnnotationType.ADD.value, 0.8)
+
+    spare_keywords = ['spare', 'mark spare']
+    if any(kw in text_lower for kw in spare_keywords):
+        return (AnnotationType.MARK_SPARE.value, 0.85)
 
     return (AnnotationType.UNKNOWN.value, 0.3)
 
