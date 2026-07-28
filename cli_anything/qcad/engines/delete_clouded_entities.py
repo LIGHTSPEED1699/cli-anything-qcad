@@ -517,6 +517,27 @@ class DeleteCloudedEntitiesEngine:
             verts = region.get("verts", [])
             if len(verts) < 3:
                 continue
+
+            # Expand narrow callout-arrow regions: when the polygon is a
+            # narrow arrow shaft (width < 2.0 DXF units), the user's intent
+            # is to delete text near the arrow origin too, not just entities
+            # inside the shaft.  Add a buffer around all vertices so nearby
+            # text labels are included.
+            xs = [v[0] for v in verts]
+            ys = [v[1] for v in verts]
+            region_width = max(xs) - min(xs)
+            region_height = max(ys) - min(ys)
+            if region_width < 2.0 and region_height < 2.0:
+                # Callout arrow: expand into a bounding box with padding
+                pad = 1.5
+                expanded = [
+                    (min(xs) - pad, min(ys) - pad),
+                    (max(xs) + pad, min(ys) - pad),
+                    (max(xs) + pad, max(ys) + pad),
+                    (min(xs) - pad, max(ys) + pad),
+                ]
+                verts = expanded
+
             for ent in list(msp):
                 h = ent.dxf.handle
                 if h in protected_handles:

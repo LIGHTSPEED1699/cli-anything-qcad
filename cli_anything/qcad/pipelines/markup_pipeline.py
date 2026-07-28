@@ -103,17 +103,20 @@ class MarkupPipeline:
             # Non-fatal: overlay is diagnostic, pipeline should continue
             overlay_png = None
 
-        # Sort tasks: deletions first, then changes/adds, then mark spare last
+        # Sort tasks: mark spare FIRST (before deletes that share the same
+        # cloud polygon and would delete the wires), then deletions, then
+        # changes/adds.  Without this, a delete task with the same region as
+        # a mark_spare task kills the wires before spare labels can be added.
         order = {
-            "delete_clouded_entities": 0,
-            "resize_bounding_box": 1,
-            "change_text_value": 2,
-            "add_text_label": 3,
-            "clone_terminal_wires": 4,
-            "cloud_clone": 4,
-            "mark_spare_wires": 9,
+            "mark_spare_wires": 0,
+            "delete_clouded_entities": 1,
+            "resize_bounding_box": 2,
+            "change_text_value": 3,
+            "add_text_label": 4,
+            "clone_terminal_wires": 5,
+            "cloud_clone": 5,
         }
-        tasks.sort(key=lambda t: (order.get(t.task_type, 5), t.task_id))
+        tasks.sort(key=lambda t: (order.get(t.task_type, 6), t.task_id))
 
         # Apply agent-provided parameter overrides to specific tasks.
         # overrides is a dict: {"t002": {"tolerance": 1.5}, "t006": {"offset": 4.0}}
