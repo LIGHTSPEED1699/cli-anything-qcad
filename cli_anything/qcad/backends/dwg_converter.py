@@ -91,10 +91,12 @@ class DwgConverter:
         else:
             oda_out_dir = output_dir
         try:
+            env = os.environ.copy()
+            env["QT_QPA_PLATFORM"] = "offscreen"
             subprocess.run(
                 [self.oda_converter, str(input_dir), str(oda_out_dir),
                  self.version, "DXF", "0", "1"],
-                check=True, capture_output=True, text=True,
+                check=True, capture_output=True, text=True, env=env,
             )
             generated = oda_out_dir / f"{src_stem}.dxf"
             if generated.exists():
@@ -121,10 +123,12 @@ class DwgConverter:
         else:
             oda_out_dir = output_dir
         try:
+            env = os.environ.copy()
+            env["QT_QPA_PLATFORM"] = "offscreen"
             subprocess.run(
                 [self.oda_converter, str(input_dir), str(oda_out_dir),
                  self.version, "DWG", "0", "1"],
-                check=True, capture_output=True, text=True,
+                check=True, capture_output=True, text=True, env=env,
             )
             generated = oda_out_dir / f"{src_stem}.dwg"
             if generated.exists():
