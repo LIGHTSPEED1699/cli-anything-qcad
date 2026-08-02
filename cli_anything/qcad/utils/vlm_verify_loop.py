@@ -31,6 +31,7 @@ import subprocess
 import sys
 import time
 import urllib.request
+import urllib.error
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -367,27 +368,81 @@ def query_vlm(
     ollama_url: str = "http://localhost:11434",
     model: str = "gemma4:31b-cloud",
     timeout: int = 300,
+    num_predict: int = 8192,
+    max_retries: int = 3,
+    fallback_model: str = "gemma4:e4b",
 ) -> str:
-    """Query a VLM with an image and neutral question. Returns the text answer."""
+    """Query a VLM with an image and neutral question. Returns the text answer.
+
+    Uses gemma4:31b-cloud (cloud, better accuracy) with retry logic because
+    the Ollama Cloud backend intermittently returns HTTP 500 on image inputs
+    (~60-80% failure rate observed, server-side issue).  On repeated 500s,
+    falls back to gemma4:e4b (local, works reliably but lower accuracy).
+
+    num_predict defaults to 8192 because both gemma4 variants are thinking
+    models — they spend tokens on internal reasoning before producing visible
+    output.  With 4096 the thinking budget eats everything and content comes
+    back empty.
+    """
     with open(image_path, "rb") as f:
         img_b64 = base64.b64encode(f.read()).decode()
 
-    payload = json.dumps({
-        "model": model,
-        "messages": [{"role": "user", "content": question, "images": [img_b64]}],
-        "stream": False,
-        "options": {"num_predict": 4096, "temperature": 0.3},
-    }).encode()
+    def _try_model(mdl: str) -> str:
+        payload = json.dumps({
+            "model": mdl,
+            "messages": [{"role": "user", "content": question, "images": [img_b64]}],
+            "stream": False,
+            "options": {"num_predict": num_predict, "temperature": 0.3},
+        }).encode()
+        req = urllib.request.Request(
+            f"{ollama_url}/api/chat",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            result = json.loads(resp.read().decode())
+        return result.get("message", {}).get("content", "")
 
-    req = urllib.request.Request(
-        f"{ollama_url}/api/chat",
-        data=payload,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        result = json.loads(resp.read().decode())
-    return result.get("message", {}).get("content", "")
+    # Try the primary model with retries
+    last_err = None
+    for attempt in range(max_retries):
+        try:
+            content = _try_model(model)
+            if content:
+                return content
+            # Empty content = thinking model ate all tokens, not a 500.
+            # Retry with same model — sometimes it produces output.
+            print(f"[VLM] Empty content from {model} (attempt {attempt+1}), "
+                  f"retrying...", flush=True)
+        except urllib.error.HTTPError as e:
+            last_err = e
+            if e.code == 500:
+                print(f"[VLM] {model} returned HTTP 500 (attempt {attempt+1}/"
+                      f"{max_retries}), retrying...", flush=True)
+                continue
+            # Non-500 HTTP error (400, 402, etc.) — don't retry
+            raise
+        except Exception as e:
+            last_err = e
+            print(f"[VLM] {model} error (attempt {attempt+1}): {e}",
+                  flush=True)
+
+    # All retries exhausted on primary model — fall back to local model
+    if fallback_model and fallback_model != model:
+        print(f"[VLM] {model} failed after {max_retries} retries, "
+              f"falling back to {fallback_model}", flush=True)
+        try:
+            content = _try_model(fallback_model)
+            if content:
+                return content
+        except Exception as e:
+            print(f"[VLM] Fallback {fallback_model} also failed: {e}",
+                  flush=True)
+
+    # If we get here, both models failed.  Return empty string (triggers DXF
+    # fallback in evaluate_check).
+    return ""
 
 
 # ── Check evaluation ──────────────────────────────────────────

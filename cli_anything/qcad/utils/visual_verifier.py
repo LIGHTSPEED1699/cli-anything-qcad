@@ -237,7 +237,7 @@ class QcadVlmVerifier:
 
     # ── VLM query ────────────────────────────────────────────
 
-    def query_vlm(self, image_path: str, question: str, max_tokens: int = 4096) -> Dict:
+    def query_vlm(self, image_path: str, question: str, max_tokens: int = 8192) -> Dict:
         with open(image_path, "rb") as f:
             image_b64 = base64.b64encode(f.read()).decode()
         payload = {
