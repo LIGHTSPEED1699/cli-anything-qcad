@@ -306,6 +306,51 @@ def _copy_entity(msp, ent, dy: float, text_replacements: Dict[str, str],
     return new
 
 
+def _parse_feedback_exclusions(constraints: list) -> dict:
+    """Parse USER FEEDBACK constraints for exclusion hints.
+
+    Returns a dict with optional keys:
+        "exclude_source_rows": set of source row numbers to skip
+        "exclude_terminal_nums": set of terminal numbers to exclude from selection
+    """
+    result = {
+        "exclude_source_rows": set(),
+        "exclude_terminal_nums": set(),
+    }
+    if not constraints:
+        return result
+    for c in constraints:
+        if not isinstance(c, str) or "USER FEEDBACK" not in c:
+            continue
+        # Pattern: "wire on terminal #3 was mistakenly copied to wire 6"
+        # → exclude terminal 3 from source selection
+        m = re.search(r"terminal\s*#?\s*(\d+)\s+was\s+(?:mistakenly\s+)?copied",
+                       c, re.I)
+        if m:
+            result["exclude_terminal_nums"].add(int(m.group(1)))
+        # Pattern: "do not copy terminal 3" / "exclude terminal 3"
+        for m in re.finditer(r"(?:do\s+not|exclude|skip|don'?t)\s+terminal\s*#?\s*(\d+)",
+                              c, re.I):
+            result["exclude_terminal_nums"].add(int(m.group(1)))
+        # Pattern: "do not copy row 4" / "skip row 4"
+        for m in re.finditer(r"(?:do\s+not|exclude|skip|don'?t)\s+row\s+(\d+)",
+                              c, re.I):
+            result["exclude_source_rows"].add(int(m.group(1)))
+    return result
+
+
+def _entity_at_terminal(ent, doc, terminal_num: int, row_y_center_fn) -> bool:
+    """Check if an entity is geometrically near a specific terminal row."""
+    pts = _entity_geometry_points(ent)
+    if not pts:
+        return False
+    y = row_y_center_fn(doc, terminal_num)
+    if y is None:
+        return False
+    avg_y = sum(p[1] for p in pts) / len(pts)
+    return abs(avg_y - y) <= 0.5
+
+
 class CloudCloneEngine:
     def run(self, dxf_path: str, parameters: Dict[str, Any], out_dxf: str) -> Dict[str, Any]:
         regions = parameters.get("regions", [])
@@ -328,6 +373,15 @@ class CloudCloneEngine:
 
         text_replacements = _parse_text_replacements(
             parameters.get("text", ""), {**parameters, "source_rows": source_rows, "target_rows": target_rows})
+
+        # Parse USER FEEDBACK constraints for exclusion hints (redo comments).
+        constraints = parameters.get("constraints", [])
+        feedback_excl = _parse_feedback_exclusions(constraints)
+        if feedback_excl["exclude_terminal_nums"] or feedback_excl["exclude_source_rows"]:
+            print(f"[cloud_clone] feedback exclusions: "
+                  f"terminals={feedback_excl['exclude_terminal_nums'] or 'none'}, "
+                  f"rows={feedback_excl['exclude_source_rows'] or 'none'}",
+                  flush=True)
 
         doc = ezdxf.readfile(dxf_path)
         msp = doc.modelspace()
@@ -409,6 +463,29 @@ class CloudCloneEngine:
         print(f"[cloud_clone] selected {len(selected_entities)}")
         if not selected_entities:
             return {"engine": "cloud_clone", "success": False, "error": "no entities found"}
+
+        # === FEEDBACK EXCLUSION (redo comments) ===
+        # Remove entities at excluded terminal positions from the selection.
+        # E.g. "wire on terminal #3 was mistakenly copied to wire 6" →
+        # strip entities at terminal 3's y-band so they don't get cloned.
+        if feedback_excl["exclude_terminal_nums"]:
+            before = len(selected_entities)
+            kept = []
+            for ent in selected_entities:
+                skip = False
+                for tnum in feedback_excl["exclude_terminal_nums"]:
+                    if tnum not in source_rows:
+                        # Only exclude if the terminal isn't a legitimate source row
+                        if _entity_at_terminal(ent, doc, tnum, _row_y_center):
+                            skip = True
+                            break
+                if not skip:
+                    kept.append(ent)
+            if len(kept) < before:
+                print(f"[cloud_clone] feedback excluded {before - len(kept)} "
+                      f"entities at terminal(s) {feedback_excl['exclude_terminal_nums']}",
+                      flush=True)
+            selected_entities = kept
 
         # === ROW ASSIGNMENT (text by content + fallback; geometry by nearest text) ===
         text_by_row: Dict[int, list] = {r: [] for r in source_rows}

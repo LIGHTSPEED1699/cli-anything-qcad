@@ -211,6 +211,10 @@ class MarkupPipeline:
         # Pass the annotation text to the engine for pattern matching
         # (e.g., AddTextLabelEngine checks if text mentions "revision row")
         params.setdefault("text", task.text or "")
+        # Pass task constraints (including USER FEEDBACK from redo comments)
+        # so engines that read them can adjust behavior on re-runs.
+        if task.constraints:
+            params.setdefault("constraints", list(task.constraints))
         if params_override:
             params.update(params_override)
         if task.dxf_region:
