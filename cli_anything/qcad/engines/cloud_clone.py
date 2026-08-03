@@ -329,11 +329,11 @@ def _parse_feedback_exclusions(constraints: list) -> dict:
         if m:
             result["exclude_terminal_nums"].add(int(m.group(1)))
         # Pattern: "do not copy terminal 3" / "exclude terminal 3"
-        for m in re.finditer(r"(?:do\s+not|exclude|skip|don'?t)\s+terminal\s*#?\s*(\d+)",
+        for m in re.finditer(r"(?:do\s+not\s+\w+\s+|exclude\s+|skip\s+|don'?t\s+\w+\s+)terminal\s*#?\s*(\d+)",
                               c, re.I):
             result["exclude_terminal_nums"].add(int(m.group(1)))
         # Pattern: "do not copy row 4" / "skip row 4"
-        for m in re.finditer(r"(?:do\s+not|exclude|skip|don'?t)\s+row\s+(\d+)",
+        for m in re.finditer(r"(?:do\s+not\s+\w+\s+|exclude\s+|skip\s+|don'?t\s+\w+\s+)row\s+(\d+)",
                               c, re.I):
             result["exclude_source_rows"].add(int(m.group(1)))
     return result
