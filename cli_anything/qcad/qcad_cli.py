@@ -58,8 +58,10 @@ def cli(ctx, json_output, qcad, oda, overrides):
 @click.option("--skip-vlm", is_flag=True, help="Skip final and per-task VLM verification calls.")
 @click.option("--per-task-vlm", is_flag=True, help="Run VLM verification after each successful task.")
 @click.option("--dry-run", is_flag=True, help="Plan only, do not execute edits.")
+@click.option("--tier", default="T1",
+              help="Execution tier. T3 edits the DWG natively, without the DXF round-trip.")
 @click.pass_context
-def apply(ctx, dwg_path, pdf_path, output, artifacts, skip_vlm, per_task_vlm, dry_run):
+def apply(ctx, dwg_path, pdf_path, output, artifacts, skip_vlm, per_task_vlm, dry_run, tier):
     """Apply PDF markups to a DWG file and verify the result."""
     converter = DwgConverter(qcad_bin=ctx.obj.get("qcad"), oda_converter=ctx.obj.get("oda"))
     overrides = None
@@ -89,7 +91,7 @@ def apply(ctx, dwg_path, pdf_path, output, artifacts, skip_vlm, per_task_vlm, dr
         per_task_verify=per_task_vlm,
     )
     job = pipeline.run(dwg_path, pdf_path, output_dwg=output, overrides=overrides,
-                       artifacts_dir=artifacts, skip_vlm=skip_vlm)
+                       artifacts_dir=artifacts, skip_vlm=skip_vlm, tier=tier)
     _emit(ctx, job)
 
 

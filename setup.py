@@ -19,6 +19,7 @@ setup(
     entry_points={
         "console_scripts": [
             "cli-anything-qcad=cli_anything.qcad.qcad_cli:cli",
+            "dwg=cli_anything.qcad.dwg_cli:cli",
         ],
     },
     include_package_data=True,

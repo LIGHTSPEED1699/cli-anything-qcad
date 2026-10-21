@@ -72,6 +72,7 @@ class MarkupPipeline:
         artifacts_dir: Optional[str] = None,
         skip_vlm: bool = False,
         feedback: str = "",
+        tier: str = "T1",
     ) -> Dict[str, Any]:
         output_dir = Path(artifacts_dir) if artifacts_dir else Path(output_dwg).parent if output_dwg else Path.cwd()
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -117,6 +118,29 @@ class MarkupPipeline:
             "cloud_clone": 5,
         }
         tasks.sort(key=lambda t: (order.get(t.task_type, 6), t.task_id))
+
+        # T3: execute the planned tasks against the original DWG, in DWG space.
+        # The DXF above is only a planning artifact; nothing is written back
+        # through it, so blocks, attributes and handles are not round-tripped.
+        if tier == "T3":
+            from cli_anything.qcad.backends.dwg_native import DwgNativeEngine
+            if output_dwg:
+                out_dwg = Path(output_dwg)
+            else:
+                out_dwg = output_dir / f"{Path(dwg_path).stem}_modified.dwg"
+            engine = DwgNativeEngine(qcad_bin=self.qcad_bin)
+            t3 = engine.run(str(dwg_work), [t.to_dict() for t in tasks], str(out_dwg))
+            t3.update({
+                "tier": "T3",
+                "input_dwg": str(dwg_path),
+                "input_pdf": str(pdf_path),
+                "output_dwg": str(out_dwg),
+                "tasks": [t.to_dict() for t in tasks],
+            })
+            (output_dir / "pipeline_report.json").write_text(
+                json.dumps(t3, indent=2, default=str)
+            )
+            return t3
 
         # Apply agent-provided parameter overrides to specific tasks.
         # overrides is a dict: {"t002": {"tolerance": 1.5}, "t006": {"offset": 4.0}}
